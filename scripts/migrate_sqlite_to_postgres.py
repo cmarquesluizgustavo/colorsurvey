@@ -115,15 +115,15 @@ def main():
     
     # Create SQLite databases from dumps
     dumps = [
-        ('data/databases/mainsurvey.db', 'data/dumps/mainsurvey_sqldump.txt', 'mainsurvey_'),
-        ('data/databases/satfaces.db', 'data/dumps/satfaces_sqldump.txt', 'satfaces_')
+        ('data/sqlite_temp_databases/mainsurvey.db', 'data/dumps/mainsurvey_sqldump.txt', 'mainsurvey_'),
+        ('data/sqlite_temp_databases/satfaces.db', 'data/dumps/satfaces_sqldump.txt', 'satfaces_')
     ]
     
     # Connect to PostgreSQL
     print("\n🔌 Connecting to PostgreSQL...")
     pg_conn = psycopg2.connect(
         host=os.getenv('DB_HOST', 'localhost'),
-        port=int(os.getenv('DB_PORT', '5432')),
+        port=int(os.getenv('DB_PORT', '5433')),
         dbname=os.getenv('DB_NAME', 'colorsurvey'),
         user=os.getenv('DB_USER', 'postgres'),
         password=os.getenv('DB_PASSWORD', 'postgres')
