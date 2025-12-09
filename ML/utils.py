@@ -32,7 +32,13 @@ class ExperimentLogger:
         if experiment_name is None:
             experiment_name = datetime.now().strftime("%Y%m%d-%H%M%S")
 
-        self.log_dir = os.path.join(log_dir, experiment_name)
+        # Create experiment folder
+        experiment_dir = os.path.join(log_dir, experiment_name)
+        os.makedirs(experiment_dir, exist_ok=True)
+        
+        # Create a unique run folder within the experiment
+        run_timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.log_dir = os.path.join(experiment_dir, f"run_{run_timestamp}")
         os.makedirs(self.log_dir, exist_ok=True)
 
         # TensorBoard Writer
@@ -40,23 +46,35 @@ class ExperimentLogger:
 
         # CSV Writer
         self.csv_file = open(os.path.join(self.log_dir, "metrics.csv"), "w", newline="")
-        self.csv_writer = csv.writer(self.csv_file)
-        self.csv_writer.writerow(["epoch", "cycle", "train_loss", "val_accuracy"])
+        self.csv_writer = csv.DictWriter(
+            self.csv_file,
+            fieldnames=[
+                "timestamp", "global_step", "cycle", "step_type", "epoch_in_step",
+                "step_time", "ce_loss", "triplet_loss", "total_loss", "accuracy"
+            ]
+        )
+        self.csv_writer.writeheader()
 
-    def log_metrics(self, epoch, cycle, metrics):
+    def log_metrics(self, global_step, cycle, metrics):
         # Log to TensorBoard
         for key, value in metrics.items():
             if isinstance(value, (int, float, np.number)):
-                self.writer.add_scalar(key, value, epoch)
-            else:
-                # Optionally log text or ignore
-                pass
+                self.writer.add_scalar(key, value, global_step)
 
-        # Log to CSV (assuming specific keys for simplicity, or just dumping all)
-        # We'll log the main ones to CSV for easy pandas reading later
-        self.csv_writer.writerow(
-            [epoch, cycle, metrics.get("total_loss", 0), metrics.get("accuracy", 0)]
-        )
+        # Log to CSV with all metrics
+        row = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "global_step": global_step,
+            "cycle": cycle,
+            "step_type": metrics.get("step_type", ""),
+            "epoch_in_step": metrics.get("m_step_epoch", metrics.get("e_step_epoch", "")),
+            "step_time": metrics.get("step_time", ""),
+            "ce_loss": metrics.get("ce_loss", ""),
+            "triplet_loss": metrics.get("triplet_loss", ""),
+            "total_loss": metrics.get("total_loss", ""),
+            "accuracy": metrics.get("accuracy", "")
+        }
+        self.csv_writer.writerow(row)
         self.csv_file.flush()
 
     def close(self):

@@ -1,4 +1,5 @@
 import os
+
 # Enable MPS fallback for operations not implemented in MPS
 os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 
@@ -10,6 +11,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 import argparse
 import sys
+import time
 
 # Add project root to path to ensure imports work
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -17,7 +19,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ML.data_prep import load_and_preprocess_data, ColorDataset
 from ML.models.choice_models import BasicChoiceModel, MLPChoiceModel
 from ML.models.embedding_models import EmbeddingModel
-from ML.losses.triplet_losses import VanillaTripletLoss
+from ML.losses.triplet_losses import VanillaTripletLoss, ConditionalTripletLoss
 from ML.utils import set_seed, load_config, save_config, ExperimentLogger
 
 
@@ -32,9 +34,12 @@ def get_choice_model(model_type, embedding_dim, num_classes, hidden_dim=64):
         raise NotImplementedError(f"Unknown choice model type: {model_type}")
 
 
-def get_loss_function(loss_name, margin=1.0):
+def get_loss_function(loss_name, margin=1.0, choice_model=None):
     if loss_name == "vanilla_triplet":
         return VanillaTripletLoss(margin=margin)
+    elif loss_name == "conditional_triplet":
+        loss_fn = ConditionalTripletLoss(margin=margin, choice_model=choice_model)
+        return loss_fn
     else:
         raise NotImplementedError(f"Unknown loss function: {loss_name}")
 
@@ -71,11 +76,15 @@ class Trainer:
             ColorDataset(X_train, y_train),
             batch_size=config["data"]["batch_size"],
             shuffle=True,
+            num_workers=6,
+            persistent_workers=True,
         )
         self.test_loader = DataLoader(
             ColorDataset(X_test, y_test),
             batch_size=config["data"]["batch_size"],
             shuffle=False,
+            num_workers=4,
+            persistent_workers=True,
         )
 
         # Models
@@ -91,8 +100,11 @@ class Trainer:
 
         # Loss
         self.triplet_loss_fn = get_loss_function(
-            config["training"]["loss_fn"], margin=config["training"]["margin"]
+            config["training"]["loss_fn"],
+            choice_model=self.choice_model,
+            margin=config["training"]["margin"],
         ).to(self.device)
+        
         self.ce_loss_fn = nn.CrossEntropyLoss().to(self.device)
 
         # Optimizers
@@ -150,8 +162,10 @@ class Trainer:
                 p.requires_grad = True
 
             for epoch in range(epochs_per_step):
+                epoch_start_time = time.time()
                 global_step += 1
                 total_loss_m = 0
+                
                 for batch_x, batch_y in self.train_loader:
                     batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
                     self.opt_phi.zero_grad()
@@ -165,7 +179,11 @@ class Trainer:
                     self.opt_phi.step()
                     total_loss_m += loss.item()
 
-                print("M-Step Epoch {} completed.".format(epoch + 1))
+                epoch_time = time.time() - epoch_start_time
+                avg_loss = total_loss_m / len(self.train_loader)
+                
+                print(f"M-Step Epoch {epoch + 1} completed in {epoch_time:.2f}s | Loss: {avg_loss:.4f}")
+                
                 # Log M-Step
                 self.logger.log_metrics(
                     global_step,
@@ -173,7 +191,8 @@ class Trainer:
                     {
                         "step_type": "M-Step",
                         "m_step_epoch": epoch,
-                        "ce_loss": total_loss_m / len(self.train_loader),
+                        "step_time": epoch_time,
+                        "ce_loss": avg_loss,
                     },
                 )
 
@@ -186,8 +205,12 @@ class Trainer:
                 p.requires_grad = False
 
             for epoch in range(epochs_per_step):
+                epoch_start_time = time.time()
                 global_step += 1
                 total_loss_e = 0
+                total_triplet = 0
+                total_ce = 0
+                
                 for batch_x, batch_y in self.train_loader:
                     batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
                     self.opt_theta.zero_grad()
@@ -206,23 +229,37 @@ class Trainer:
 
                     loss.backward()
                     self.opt_theta.step()
+                    
                     total_loss_e += loss.item()
+                    total_triplet += loss_triplet.item()
+                    total_ce += loss_ce.item()
 
+                epoch_time = time.time() - epoch_start_time
+                avg_total_loss = total_loss_e / len(self.train_loader)
+                avg_triplet = total_triplet / len(self.train_loader)
+                avg_ce = total_ce / len(self.train_loader)
+                
                 # Evaluate and Log
+                eval_start = time.time()
                 acc = self.evaluate(global_step)
+                eval_time = time.time() - eval_start
+                
+                print(f"E-Step Epoch {epoch + 1} completed in {epoch_time:.2f}s (eval: {eval_time:.2f}s) | "
+                      f"Loss: {avg_total_loss:.4f} | Acc: {acc:.4f}")
+                
                 self.logger.log_metrics(
                     global_step,
                     cycle,
                     {
                         "step_type": "E-Step",
                         "e_step_epoch": epoch,
-                        "total_loss": total_loss_e / len(self.train_loader),
+                        "step_time": epoch_time,
+                        "total_loss": avg_total_loss,
                         "accuracy": acc,
-                        "triplet_loss": loss_triplet.item(),
-                        "ce_loss": loss_ce.item(),
+                        "triplet_loss": avg_triplet,
+                        "ce_loss": avg_ce,
                     },
                 )
-                print("E-Step Epoch {} completed.".format(epoch + 1))
 
         # Final Evaluation
         print("\nFinal Evaluation:")
