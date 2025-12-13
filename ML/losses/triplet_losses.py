@@ -43,6 +43,8 @@ class ConditionalTripletLoss(nn.Module):
     Selects triplets based on whether the anchor is correctly classified:
     - Case A (Misclassified): Negative from predicted (incorrect) class
     - Case B (Correct): Negative from second-highest probability class
+    
+    Optimized with vectorized operations for better performance.
     """
     def __init__(self, choice_model, margin=1.0):
         super().__init__()
@@ -75,44 +77,57 @@ class ConditionalTripletLoss(nn.Module):
             predicted_classes   # Case A: predicted (wrong) class
         )
         
-        # Build triplets
-        losses = []
+        # VECTORIZED TRIPLET MINING
+        # Create masks for valid samples
+        label_eq = labels.unsqueeze(1) == labels.unsqueeze(0)  # [batch_size, batch_size]
+        target_neg_eq = labels.unsqueeze(1) == target_negative_classes.unsqueeze(0)  # [batch_size, batch_size]
         
-        for i in range(batch_size):
-            anchor_embedding = embeddings[i]
-            anchor_label = labels[i]
-            target_neg_class = target_negative_classes[i]
-            
-            # Find positive samples (same class as ground truth, excluding anchor)
-            positive_mask = (labels == anchor_label)
-            positive_mask[i] = False  # Exclude anchor itself
-            positive_indices = torch.where(positive_mask)[0]
-            
-            # Find negative samples (from target negative class)
-            negative_mask = (labels == target_neg_class)
-            negative_indices = torch.where(negative_mask)[0]
-            
-            # Skip if no valid positive or negative samples
-            if len(positive_indices) == 0 or len(negative_indices) == 0:
-                continue
-            
-            # Randomly select one positive and one negative
-            pos_idx = positive_indices[torch.randint(len(positive_indices), (1,))]
-            neg_idx = negative_indices[torch.randint(len(negative_indices), (1,))]
-            
-            positive_embedding = embeddings[pos_idx]
-            negative_embedding = embeddings[neg_idx]
-            
-            # Compute distances
-            pos_dist = torch.norm(anchor_embedding - positive_embedding, p=2)
-            neg_dist = torch.norm(anchor_embedding - negative_embedding, p=2)
-            
-            # Triplet loss: max(0, d(a,p) - d(a,n) + margin)
-            loss = torch.relu(pos_dist - neg_dist + self.margin)
-            losses.append(loss)
+        # Diagonal mask to exclude self-comparisons
+        not_diag = ~torch.eye(batch_size, dtype=torch.bool, device=device)
         
-        # Return mean loss (or zero if no valid triplets)
-        if len(losses) == 0:
+        # Positive mask: same true label, not self
+        positive_mask = label_eq & not_diag
+        
+        # Negative mask: matches target negative class
+        negative_mask = target_neg_eq
+        
+        # Check which anchors have valid positives and negatives
+        has_positive = positive_mask.any(dim=1)
+        has_negative = negative_mask.any(dim=1)
+        valid_anchors = has_positive & has_negative
+        
+        if not valid_anchors.any():
             return torch.tensor(0.0, device=device, requires_grad=True)
         
-        return torch.stack(losses).mean()
+        # Compute all pairwise distances efficiently
+        dists = torch.cdist(embeddings, embeddings, p=2)  # [batch_size, batch_size]
+        
+        # For each valid anchor, select a random positive and negative
+        # We'll use a simple strategy: take the first valid positive/negative for speed
+        # (More sophisticated sampling can be added if needed)
+        
+        # Find first valid positive index for each anchor
+        positive_mask_float = positive_mask.float()
+        positive_mask_float[~positive_mask] = float('inf')
+        pos_indices = torch.argmin(positive_mask_float, dim=1)  # First True position
+        
+        # Find first valid negative index for each anchor
+        negative_mask_float = negative_mask.float()
+        negative_mask_float[~negative_mask] = float('inf')
+        neg_indices = torch.argmin(negative_mask_float, dim=1)  # First True position
+        
+        # Filter to valid anchors only
+        anchor_indices = torch.arange(batch_size, device=device)[valid_anchors]
+        pos_indices = pos_indices[valid_anchors]
+        neg_indices = neg_indices[valid_anchors]
+        
+        # Gather distances efficiently
+        pos_dists = dists[anchor_indices, pos_indices]
+        neg_dists = dists[anchor_indices, neg_indices]
+        
+        # Compute triplet loss
+        losses = torch.relu(pos_dists - neg_dists + self.margin)
+        
+        return losses.mean()
+
+
