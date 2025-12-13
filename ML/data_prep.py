@@ -19,7 +19,7 @@ class ColorDataset(Dataset):
         return self.data[idx], self.labels[idx]
 
 
-def load_and_preprocess_data(csv_path, top_n=329):
+def load_and_preprocess_data(csv_path, top_n=135):
     """
     Loads data from CSV, filters for common colors, and prepares train/test splits.
     top_n: Keep only the top N most common colors.
