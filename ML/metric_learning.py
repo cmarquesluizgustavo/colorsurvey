@@ -97,7 +97,7 @@ class Trainer:
             config["model"]["choice_model_type"],
             config["model"]["embedding_dim"],
             self.num_classes,
-            config["model"].get("hidden_dim", 64),
+            config["model"]["hidden_dim"],
         ).to(self.device)
 
         # Loss
@@ -105,6 +105,7 @@ class Trainer:
             config["training"]["loss_fn"],
             choice_model=self.choice_model,
             margin=config["training"]["margin"],
+            temperature=config["training"]["temperature"],
         ).to(self.device)
         
         self.ce_loss_fn = nn.CrossEntropyLoss().to(self.device)
@@ -167,8 +168,11 @@ class Trainer:
                 epoch_start_time = time.time()
                 global_step += 1
                 total_loss_m = 0
+                total_batches = len(self.train_loader)
                 
-                for batch_x, batch_y in self.train_loader:
+                for batch_idx, (batch_x, batch_y) in enumerate(self.train_loader, 1):
+                    if batch_idx % 1000 == 0 or batch_idx == total_batches:
+                        print(f"\rM-Step Epoch {epoch + 1} - Batch {batch_idx}/{total_batches}", end="", flush=True)
                     batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
                     self.opt_phi.zero_grad()
 
@@ -184,7 +188,7 @@ class Trainer:
                 epoch_time = time.time() - epoch_start_time
                 avg_loss = total_loss_m / len(self.train_loader)
                 
-                print(f"M-Step Epoch {epoch + 1} completed in {epoch_time:.2f}s | Loss: {avg_loss:.4f}")
+                print(f"\rM-Step Epoch {epoch + 1} completed in {epoch_time:.2f}s | Loss: {avg_loss:.4f}")
                 
                 # Log M-Step
                 self.logger.log_metrics(
@@ -212,8 +216,11 @@ class Trainer:
                 total_loss_e = 0
                 total_triplet = 0
                 total_ce = 0
+                total_batches = len(self.train_loader)
                 
-                for batch_x, batch_y in self.train_loader:
+                for batch_idx, (batch_x, batch_y) in enumerate(self.train_loader, 1):
+                    if batch_idx % 1000 == 0 or batch_idx == total_batches:
+                        print(f"\rE-Step Epoch {epoch + 1} - Batch {batch_idx}/{total_batches}", end="", flush=True)
                     batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
                     self.opt_theta.zero_grad()
 
@@ -246,7 +253,7 @@ class Trainer:
                 acc = self.evaluate(global_step)
                 eval_time = time.time() - eval_start
                 
-                print(f"E-Step Epoch {epoch + 1} completed in {epoch_time:.2f}s (eval: {eval_time:.2f}s) | "
+                print(f"\rE-Step Epoch {epoch + 1} completed in {epoch_time:.2f}s (eval: {eval_time:.2f}s) | "
                       f"Loss: {avg_total_loss:.4f} | Acc: {acc:.4f}")
                 
                 self.logger.log_metrics(
