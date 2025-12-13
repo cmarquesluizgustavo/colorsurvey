@@ -19,7 +19,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ML.data_prep import load_and_preprocess_data, ColorDataset
 from ML.models.choice_models import BasicChoiceModel, MLPChoiceModel
 from ML.models.embedding_models import EmbeddingModel
-from ML.losses.triplet_losses import VanillaTripletLoss, ConditionalTripletLoss
+from ML.losses.triplet_losses import VanillaTripletLoss, ConditionalTripletLoss, SoftNearestNeighborLoss
 from ML.utils import set_seed, load_config, save_config, ExperimentLogger
 
 
@@ -34,12 +34,14 @@ def get_choice_model(model_type, embedding_dim, num_classes, hidden_dim=64):
         raise NotImplementedError(f"Unknown choice model type: {model_type}")
 
 
-def get_loss_function(loss_name, margin=1.0, choice_model=None):
+def get_loss_function(loss_name, margin=1.0, choice_model=None, temperature=1.0):
     if loss_name == "vanilla_triplet":
         return VanillaTripletLoss(margin=margin)
     elif loss_name == "conditional_triplet":
         loss_fn = ConditionalTripletLoss(margin=margin, choice_model=choice_model)
         return loss_fn
+    elif loss_name == "snnl":
+        return SoftNearestNeighborLoss(temperature=temperature)
     else:
         raise NotImplementedError(f"Unknown loss function: {loss_name}")
 

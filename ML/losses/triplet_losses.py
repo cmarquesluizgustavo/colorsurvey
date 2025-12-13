@@ -131,3 +131,67 @@ class ConditionalTripletLoss(nn.Module):
         return losses.mean()
 
 
+class SoftNearestNeighborLoss(nn.Module):
+    """
+    Soft Nearest Neighbor Loss (SNNL) for learning disentangled representations.
+    
+    This version uses Euclidean Distance (||x - y||^2) to align with the 
+    original definition (Salakhutdinov & Hinton 2007).
+    """
+    def __init__(self, temperature=1.0, stability_epsilon=1e-6):
+        super().__init__()
+        self.temperature = temperature
+        self.stability_epsilon = stability_epsilon
+    
+    def forward(self, embeddings, labels):
+        """
+        Args:
+            embeddings: [batch_size, embedding_dim]
+            labels: [batch_size]
+        Returns:
+            snnl: scalar loss value
+        """
+        # 1. Calculate Squared Euclidean Distance matrix
+        # (x - y)^2 = x^2 + y^2 - 2xy
+        sq_norm = torch.sum(embeddings ** 2, dim=1, keepdim=True)
+        # Result: [Batch, Batch]
+        distance_matrix = sq_norm + sq_norm.t() - 2 * torch.matmul(embeddings, embeddings.t())
+        
+        # Ensure distances are non-negative (handling floating point errors)
+        distance_matrix = torch.clamp(distance_matrix, min=0.0)
+        
+        # 2. Compute the exponential term (numerator of the softmax)
+        # We use negative distance because we want smallest distance = highest probability
+        exp_dist = torch.exp(-distance_matrix / self.temperature)
+        
+        # 3. Mask out self-similarity (diagonal)
+        # We don't want the point to form a pair with itself
+        mask_diagonal = ~torch.eye(embeddings.size(0), dtype=torch.bool, device=embeddings.device)
+        exp_dist = exp_dist * mask_diagonal.float()
+        
+        # 4. Compute Sampling Probabilities (P(j|i))
+        # Denominator: Sum of exp distances to ALL other points (k != i)
+        # We add epsilon to denominator to prevent division by zero
+        denominator = torch.sum(exp_dist, dim=1, keepdim=True) + self.stability_epsilon
+        pick_probability = exp_dist / denominator
+        
+        # 5. Filter for Same-Class Pairs Only
+        # Create a mask where position (i, j) is 1 if label[i] == label[j]
+        label_mask = (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
+        
+        # We multiply by the diagonal mask again to ensure we don't count self-matches 
+        # (though exp_dist is already masked, this is a safety double-check for the label mask)
+        label_mask = label_mask * mask_diagonal.float()
+        
+        # The probability of picking a neighbor that belongs to the SAME class
+        masked_pick_probability = pick_probability * label_mask
+        
+        # 6. Compute Loss
+        # Sum probabilities of all valid positive pairs for each sample
+        summed_masked_probability = torch.sum(masked_pick_probability, dim=1)
+        
+        # Loss = -log(Sum of probabilities of picking a positive neighbor)
+        # Add epsilon inside log to avoid log(0)
+        loss = -torch.log(summed_masked_probability + self.stability_epsilon)
+        
+        return loss.mean()
