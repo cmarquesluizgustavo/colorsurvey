@@ -62,7 +62,11 @@ class Trainer:
 
         # Data
         self.X, self.y, self.le = load_and_preprocess_data(
-            config["data"]["csv_path"], top_n=config["data"]["top_n_colors"]
+            config["data"]["csv_path"], 
+            top_n=config["data"]["top_n_colors"],
+            balance_strategy=config["data"].get("balance_strategy", "none"),
+            balance_ratio=config["data"].get("balance_ratio", 1.0),
+            random_state=config["seed"]
         )
         self.num_classes = len(self.le.classes_)
 
