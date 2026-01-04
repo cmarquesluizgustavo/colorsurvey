@@ -3,6 +3,7 @@ torch
 numpy
 pandas
 scikit-learn
+imbalanced-learn
 matplotlib
 SQLAlchemy
 tensorboard
