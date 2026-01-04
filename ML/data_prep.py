@@ -1,8 +1,9 @@
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader as TorchDataLoader
 from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
 from imblearn.over_sampling import RandomOverSampler
 from imblearn.under_sampling import RandomUnderSampler
 from collections import Counter
@@ -118,17 +119,15 @@ def balance_classes(X, y, strategy="undersample", sampling_ratio=1.0,
     print(f"✅ Balanced class distribution:")
     print(f"   Min: {min(final_counts.values()):,}, Max: {max(final_counts.values()):,}")
     print(f"   Total samples: {len(y_balanced):,} (change: {len(y_balanced) - len(y):+,})")
-    print(f"   Imbalance ratio: {max(final_counthybrid_oversample_fraction=0.6, 
-                             random_state=42):
-    """
-    Loads data from CSV, filters for common colors, and prepares balanced dataset.
+    print(f"   Imbalance ratio: {max(final_counts.values()) / min(final_counts.values()):.2f}:1")
     
-    Args:
-        csv_path: Path to the CSV file with color data
-        top_n: Keep only the top N most common colors
-        balance_strategy: Class balancing strategy (see balance_classes for options)
-        balance_ratio: Target balancing ratio (0.0 to 1.0, where 1.0 is perfect balance)
-        hybrid_oversample_fraction: For hybrid strategy, fraction of work done by oversampling (0.0 to 1.0
+    return X_balanced, y_balanced
+
+
+def load_and_preprocess_data(csv_path, top_n=100, balance_strategy="none", 
+                             balance_ratio=1.0, random_state=42):
+    """
+    Load data from CSV, filter for common colors, and prepare balanced dataset.
     
     Args:
         csv_path: Path to the CSV file with color data
@@ -165,8 +164,7 @@ def balance_classes(X, y, strategy="undersample", sampling_ratio=1.0,
     y_text = df_filtered["colorname"].values
 
     # Encode labels
-    le =hybrid_oversample_fraction=hybrid_oversample_fraction,
-         LabelEncoder()
+    le = LabelEncoder()
     y = le.fit_transform(y_text)
     
     # Apply class balancing
@@ -178,3 +176,68 @@ def balance_classes(X, y, strategy="undersample", sampling_ratio=1.0,
     )
 
     return X_balanced, y_balanced, le
+
+
+class DataLoader:
+    """Unified data loader for all training methods."""
+    
+    def __init__(self, config):
+        self.config = config
+        self.data_config = config["data"]
+        self.seed = config["seed"]
+    
+    def load(self):
+        """Load and prepare data for training."""
+        # Load and preprocess data
+        X, y, le = load_and_preprocess_data(
+            self.data_config["csv_path"],
+            top_n=self.data_config["top_n_colors"],
+            balance_strategy=self.data_config.get("balance_strategy", "none"),
+            balance_ratio=self.data_config.get("balance_ratio", 1.0),
+            random_state=self.seed
+        )
+        
+        if X is None or y is None:
+            raise ValueError("Failed to load data")
+        
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y,
+            test_size=self.data_config["test_size"],
+            random_state=self.seed,
+            stratify=y
+        )
+        
+        num_classes = len(le.classes_)
+        
+        # Prepare data bundle
+        data_bundle = {
+            "X_train": X_train,
+            "X_test": X_test,
+            "y_train": y_train,
+            "y_test": y_test,
+            "num_classes": num_classes,
+            "label_encoder": le
+        }
+        
+        # Add PyTorch DataLoaders if batch_size is specified (for metric learning)
+        if "batch_size" in self.data_config:
+            train_dataset = ColorDataset(X_train, y_train)
+            test_dataset = ColorDataset(X_test, y_test)
+            
+            data_bundle["train_loader"] = TorchDataLoader(
+                train_dataset,
+                batch_size=self.data_config["batch_size"],
+                shuffle=True,
+                num_workers=6,
+                persistent_workers=True
+            )
+            data_bundle["test_loader"] = TorchDataLoader(
+                test_dataset,
+                batch_size=self.data_config["batch_size"],
+                shuffle=False,
+                num_workers=4,
+                persistent_workers=True
+            )
+        
+        return data_bundle
