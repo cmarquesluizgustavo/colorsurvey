@@ -1,9 +1,9 @@
 import os
 import time
 import json
-from sklearn.metrics import accuracy_score
 
 from ML.trainers.base import BaseTrainer, TrainerFactory
+from ML.metrics import compute_metrics
 
 
 class XGBoostTrainer(BaseTrainer):
@@ -59,15 +59,15 @@ class XGBoostTrainer(BaseTrainer):
         os.makedirs(self.models_dir, exist_ok=True)
         self.bst = None
     
-    def evaluate(self):
+    def evaluate(self, per_class=False):
         """Evaluate model on train and test sets."""
         y_pred = self.bst.predict(self.dtest)
-        test_acc = accuracy_score(self.y_test, y_pred)
+        test_metrics = compute_metrics(self.y_test, y_pred, self.num_classes, per_class)
         
         y_train_pred = self.bst.predict(self.dtrain)
-        train_acc = accuracy_score(self.y_train, y_train_pred)
+        train_metrics = compute_metrics(self.y_train, y_train_pred, self.num_classes, per_class)
         
-        return train_acc, test_acc
+        return train_metrics, test_metrics
     
     def train(self):
         """Execute XGBoost training loop."""
@@ -97,18 +97,21 @@ class XGBoostTrainer(BaseTrainer):
             # Periodic evaluation
             if (epoch + 1) % self.eval_every == 0 or epoch == self.num_epochs - 1:
                 eval_start = time.time()
-                train_acc, test_acc = self.evaluate()
+                train_metrics, test_metrics = self.evaluate()
                 eval_time = time.time() - eval_start
                 
                 print(f"Epoch {epoch+1} completed in {epoch_time:.2f}s (eval: {eval_time:.2f}s)")
-                print(f"  Trees: {total_trees} | Train Acc: {train_acc:.4f} | Test Acc: {test_acc:.4f}")
+                print(f"  Trees: {total_trees} | Train Acc: {train_metrics['accuracy']:.4f} (J: {train_metrics['youdens_j']:.4f}) | "
+                      f"Test Acc: {test_metrics['accuracy']:.4f} (J: {test_metrics['youdens_j']:.4f})")
                 
                 self.logger.log_metrics(global_step, epoch, {
                     "step_type": "Train",
                     "epoch_in_step": epoch,
                     "step_time": epoch_time,
-                    "accuracy": float(test_acc),
-                    "train_accuracy": float(train_acc)
+                    "accuracy": float(test_metrics['accuracy']),
+                    "youdens_j": float(test_metrics['youdens_j']),
+                    "train_accuracy": float(train_metrics['accuracy']),
+                    "train_youdens_j": float(train_metrics['youdens_j'])
                 })
             else:
                 print(f"Epoch {epoch+1} completed in {epoch_time:.2f}s")
@@ -120,9 +123,12 @@ class XGBoostTrainer(BaseTrainer):
                 print(f"  Saved checkpoint: {model_path}")
         
         print("\n=== Final Evaluation ===")
-        train_acc, test_acc = self.evaluate()
-        print(f"Final Train Accuracy: {train_acc:.4f}")
-        print(f"Final Test Accuracy: {test_acc:.4f}")
+        train_metrics, test_metrics = self.evaluate(per_class=True)
+        print(f"Final Train Accuracy: {train_metrics['accuracy']:.4f} | Youden's J: {train_metrics['youdens_j']:.4f}")
+        print(f"Final Test Accuracy: {test_metrics['accuracy']:.4f} | Youden's J: {test_metrics['youdens_j']:.4f}")
+        if 'per_class_recall' in test_metrics:
+            print(f"Test per-class recall: mean={test_metrics['per_class_recall'].mean():.4f}, "
+                  f"min={test_metrics['per_class_recall'].min():.4f}, max={test_metrics['per_class_recall'].max():.4f}")
         
         self.save_model()
     

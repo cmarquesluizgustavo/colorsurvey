@@ -20,8 +20,8 @@ class BaseTrainer(ABC):
         pass
     
     @abstractmethod
-    def evaluate(self):
-        """Evaluate the model."""
+    def evaluate(self, **kwargs):
+        """Evaluate the model. Returns dict of metrics."""
         pass
     
     @abstractmethod
