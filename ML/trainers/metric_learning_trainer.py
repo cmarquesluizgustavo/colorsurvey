@@ -3,9 +3,9 @@ import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from sklearn.metrics import accuracy_score
 
 from ML.trainers.base import BaseTrainer, TrainerFactory
+from ML.metrics import compute_metrics
 from ML.models.choice_models import BasicChoiceModel, MLPChoiceModel
 from ML.models.embedding_models import EmbeddingModel
 from ML.losses.triplet_losses import VanillaTripletLoss, ConditionalTripletLoss, SoftNearestNeighborLoss
@@ -81,7 +81,7 @@ class MetricLearningTrainer(BaseTrainer):
             return SoftNearestNeighborLoss(temperature=temperature)
         raise ValueError(f"Unknown loss function: {loss_name}")
     
-    def evaluate(self, data_loader=None):
+    def evaluate(self, data_loader=None, per_class=False):
         """Evaluate model on given data loader (defaults to test set)."""
         if data_loader is None:
             data_loader = self.test_loader
@@ -99,7 +99,7 @@ class MetricLearningTrainer(BaseTrainer):
                 all_preds.extend(preds.cpu().numpy())
                 all_labels.extend(batch_y.cpu().numpy())
         
-        return accuracy_score(all_labels, all_preds)
+        return compute_metrics(all_labels, all_preds, self.num_classes, per_class)
     
     def train(self):
         """Execute EM-style training loop."""
@@ -144,10 +144,12 @@ class MetricLearningTrainer(BaseTrainer):
                 avg_loss = total_loss / len(self.train_loader)
                 
                 # Evaluate on both train and test sets
-                train_acc = self.evaluate(self.train_loader)
-                test_acc = self.evaluate(self.test_loader)
+                train_metrics = self.evaluate(self.train_loader)
+                test_metrics = self.evaluate(self.test_loader)
                 
-                print(f"\rM-Step Epoch {epoch+1} completed in {epoch_time:.2f}s | Loss: {avg_loss:.4f} | Train Acc: {train_acc:.4f} | Test Acc: {test_acc:.4f}")
+                print(f"\rM-Step Epoch {epoch+1} completed in {epoch_time:.2f}s | Loss: {avg_loss:.4f} | "
+                      f"Train Acc: {train_metrics['accuracy']:.4f} (J: {train_metrics['youdens_j']:.4f}) | "
+                      f"Test Acc: {test_metrics['accuracy']:.4f} (J: {test_metrics['youdens_j']:.4f})")
                 
                 self.logger.log_metrics(global_step, cycle, {
                     "step_type": "M-Step",
@@ -155,8 +157,10 @@ class MetricLearningTrainer(BaseTrainer):
                     "step_time": epoch_time,
                     "ce_loss": avg_loss,
                     "total_loss": avg_loss,
-                    "train_accuracy": train_acc,
-                    "accuracy": test_acc
+                    "train_accuracy": train_metrics['accuracy'],
+                    "train_youdens_j": train_metrics['youdens_j'],
+                    "accuracy": test_metrics['accuracy'],
+                    "youdens_j": test_metrics['youdens_j']
                 })
             
             # E-Step: Train embeddings with frozen classifier
@@ -192,11 +196,13 @@ class MetricLearningTrainer(BaseTrainer):
                     total_ce += loss_ce.item()
                 
                 # Evaluate on both train and test sets
-                train_acc = self.evaluate(self.train_loader)
-                test_acc = self.evaluate(self.test_loader)
+                train_metrics = self.evaluate(self.train_loader)
+                test_metrics = self.evaluate(self.test_loader)
                 
                 print(f"\rE-Step Epoch {epoch+1} completed in {epoch_time:.2f}s | "
-                      f"Loss: {total_loss/len(self.train_loader):.4f} | Train Acc: {train_acc:.4f} | Test Acc: {test_acc:.4f}")
+                      f"Loss: {total_loss/len(self.train_loader):.4f} | "
+                      f"Train Acc: {train_metrics['accuracy']:.4f} (J: {train_metrics['youdens_j']:.4f}) | "
+                      f"Test Acc: {test_metrics['accuracy']:.4f} (J: {test_metrics['youdens_j']:.4f})")
                 
                 self.logger.log_metrics(global_step, cycle, {
                     "step_type": "E-Step",
@@ -205,13 +211,19 @@ class MetricLearningTrainer(BaseTrainer):
                     "total_loss": total_loss / len(self.train_loader),
                     "triplet_loss": total_triplet / len(self.train_loader),
                     "ce_loss": total_ce / len(self.train_loader),
-                    "train_accuracy": train_acc,
-                    "accuracy": test_acc
+                    "train_accuracy": train_metrics['accuracy'],
+                    "train_youdens_j": train_metrics['youdens_j'],
+                    "accuracy": test_metrics['accuracy'],
+                    "youdens_j": test_metrics['youdens_j']
                 })
         
         print("\nFinal Evaluation:")
-        final_acc = self.evaluate()
-        print(f"Final Accuracy: {final_acc:.4f}")
+        final_metrics = self.evaluate(per_class=True)
+        print(f"Final Accuracy: {final_metrics['accuracy']:.4f}")
+        print(f"Final Youden's J: {final_metrics['youdens_j']:.4f}")
+        if 'per_class_recall' in final_metrics:
+            print(f"Per-class recall: mean={final_metrics['per_class_recall'].mean():.4f}, "
+                  f"min={final_metrics['per_class_recall'].min():.4f}, max={final_metrics['per_class_recall'].max():.4f}")
         self.save_model()
     
     def save_model(self):

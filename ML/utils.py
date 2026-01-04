@@ -85,7 +85,8 @@ class ExperimentLogger:
         self.fieldnames = [
             "timestamp", "global_step", "cycle", "step_type", 
             "epoch_in_step", "step_time", 
-            "ce_loss", "triplet_loss", "total_loss", "accuracy", "train_accuracy"
+            "ce_loss", "triplet_loss", "total_loss", 
+            "accuracy", "youdens_j", "train_accuracy", "train_youdens_j"
         ]
         self.csv_writer = csv.DictWriter(self.csv_file, fieldnames=self.fieldnames, 
                                          extrasaction='ignore')
@@ -202,23 +203,30 @@ def _plot_metric_learning(df, save_dir):
         ax.set_title('Triplet Loss (E-Step)', fontsize=12, fontweight='bold')
         ax.grid(True, alpha=0.3)
     
-    # Plot 4: Train vs Test Accuracy
+    # Plot 4: Train vs Test Accuracy and Youden's J
     ax = axes[1, 1]
     test_data = df[df['accuracy'].notna()].copy()
     if not test_data.empty:
         ax.plot(test_data['global_step'], test_data['accuracy'], 
                 marker='o', label='Test Acc', linewidth=2, markersize=8, color='navy')
+        if 'youdens_j' in test_data.columns:
+            ax.plot(test_data['global_step'], test_data['youdens_j'], 
+                    marker='^', label="Test J", linewidth=2, markersize=8, color='darkgreen')
     
     train_data = df[df['train_accuracy'].notna()].copy()
     if not train_data.empty:
         ax.plot(train_data['global_step'], train_data['train_accuracy'], 
                 marker='s', label='Train Acc', linewidth=2, markersize=8, 
                 color='coral', alpha=0.7, linestyle='--')
+        if 'train_youdens_j' in train_data.columns:
+            ax.plot(train_data['global_step'], train_data['train_youdens_j'], 
+                    marker='v', label="Train J", linewidth=2, markersize=8, 
+                    color='orange', alpha=0.7, linestyle='--')
     
     ax.set_xlabel('Global Step', fontsize=11)
-    ax.set_ylabel('Accuracy', fontsize=11)
-    ax.set_title('Train vs Test Accuracy', fontsize=12, fontweight='bold')
-    ax.legend(fontsize=10)
+    ax.set_ylabel('Score', fontsize=11)
+    ax.set_title("Accuracy & Youden's J", fontsize=12, fontweight='bold')
+    ax.legend(fontsize=9, loc='best')
     ax.grid(True, alpha=0.3)
     ax.set_ylim([0, 1])
     
@@ -236,18 +244,24 @@ def _plot_xgboost(df, save_dir):
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     fig.suptitle('XGBoost Training Progress', fontsize=16, fontweight='bold')
     
-    # Plot 1: Accuracy over epochs
+    # Plot 1: Accuracy and Youden's J over epochs
     ax = axes[0]
     if 'accuracy' in df.columns:
         ax.plot(df['global_step'], df['accuracy'], 
-                marker='o', label='Test Accuracy', linewidth=2)
+                marker='o', label='Test Accuracy', linewidth=2, color='navy')
+    if 'youdens_j' in df.columns:
+        ax.plot(df['global_step'], df['youdens_j'], 
+                marker='^', label="Test Youden's J", linewidth=2, color='darkgreen')
     if 'train_accuracy' in df.columns:
         ax.plot(df['global_step'], df['train_accuracy'], 
-                marker='s', label='Train Accuracy', linewidth=2, alpha=0.7)
+                marker='s', label='Train Accuracy', linewidth=2, alpha=0.7, color='coral', linestyle='--')
+    if 'train_youdens_j' in df.columns:
+        ax.plot(df['global_step'], df['train_youdens_j'], 
+                marker='v', label="Train Youden's J", linewidth=2, alpha=0.7, color='orange', linestyle='--')
     ax.set_xlabel('Epoch')
-    ax.set_ylabel('Accuracy')
-    ax.set_title('Accuracy Over Training')
-    ax.legend()
+    ax.set_ylabel('Score')
+    ax.set_title("Accuracy & Youden's J")
+    ax.legend(loc='best', fontsize=9)
     ax.grid(True, alpha=0.3)
     ax.set_ylim([0, 1])
     
