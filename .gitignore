@@ -49,3 +49,4 @@ logs/
 .specstory/
 *csv
 experiments
+analysis/non_colors.txt
