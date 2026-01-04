@@ -7,3 +7,4 @@ imbalanced-learn
 matplotlib
 SQLAlchemy
 tensorboard
+xgboost
