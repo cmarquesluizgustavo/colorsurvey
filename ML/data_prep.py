@@ -24,7 +24,8 @@ class ColorDataset(Dataset):
 
 
 def balance_classes(X, y, strategy="undersample", sampling_ratio=1.0, 
-                    hybrid_oversample_fraction=0.6, random_state=42):
+                    hybrid_oversample_fraction=0.6, fixed_samples_per_class=None, 
+                    random_state=42):
     """
     Balance class distribution using various strategies.
     
@@ -36,6 +37,7 @@ def balance_classes(X, y, strategy="undersample", sampling_ratio=1.0,
             - "undersample": Reduce majority classes
             - "oversample_duplicate": Duplicate minority classes
             - "hybrid": Combination of oversampling and undersampling
+            - "balanced_fixed": Fix all classes to exact number (requires fixed_samples_per_class)
         sampling_ratio: Target ratio for balancing (0.0 to 1.0)
             - 1.0: Perfect balance (all classes equal to smallest/largest depending on strategy)
             - 0.5: Halfway between current and perfect balance
@@ -44,6 +46,7 @@ def balance_classes(X, y, strategy="undersample", sampling_ratio=1.0,
             - 0.0: Only undersampling
             - 0.5: Equal mix of over and undersampling
             - 1.0: Only oversampling
+        fixed_samples_per_class: For balanced_fixed strategy, target number of samples per class
         random_state: Random seed for reproducibility
     
     Returns:
@@ -111,6 +114,41 @@ def balance_classes(X, y, strategy="undersample", sampling_ratio=1.0,
         under_sampler = RandomUnderSampler(sampling_strategy=under_strategy, random_state=random_state)
         X_balanced, y_balanced = under_sampler.fit_resample(X_temp, y_temp)
     
+    elif strategy == "balanced_fixed":
+        # Fixed balanced: Set all classes to exact same number of samples
+        if fixed_samples_per_class is None:
+            raise ValueError("balanced_fixed strategy requires fixed_samples_per_class parameter")
+        
+        target_size = int(fixed_samples_per_class)
+        print(f"⚖️  Applying balanced_fixed strategy (target per class: {target_size:,})...")
+        
+        # Create sampling strategy for all classes
+        sampling_strategy = {}
+        
+        for cls, count in original_counts.items():
+            sampling_strategy[cls] = target_size
+        
+        # First oversample classes below target
+        over_strategy = {cls: target_size for cls, count in original_counts.items() if count < target_size}
+        
+        if over_strategy:
+            print(f"   Oversampling {len(over_strategy)} classes below target...")
+            over_sampler = RandomOverSampler(sampling_strategy=over_strategy, random_state=random_state)
+            X_temp, y_temp = over_sampler.fit_resample(X, y)
+        else:
+            X_temp, y_temp = X, y
+        
+        # Then undersample classes above target
+        temp_counts = Counter(y_temp)
+        under_strategy = {cls: target_size for cls, count in temp_counts.items() if count > target_size}
+        
+        if under_strategy:
+            print(f"   Undersampling {len(under_strategy)} classes above target...")
+            under_sampler = RandomUnderSampler(sampling_strategy=under_strategy, random_state=random_state)
+            X_balanced, y_balanced = under_sampler.fit_resample(X_temp, y_temp)
+        else:
+            X_balanced, y_balanced = X_temp, y_temp
+    
     else:
         raise ValueError(f"Unknown balancing strategy: {strategy}")
     
@@ -124,27 +162,31 @@ def balance_classes(X, y, strategy="undersample", sampling_ratio=1.0,
     return X_balanced, y_balanced
 
 
-def load_and_preprocess_data(csv_path, top_n=100, balance_strategy="none", 
-                             balance_ratio=1.0, random_state=42):
+def load_and_preprocess_data(csv_path, top_n=100, test_size=0.2, 
+                             balance_strategy="none", balance_ratio=1.0, 
+                             fixed_samples_per_class=None, random_state=42):
     """
-    Load data from CSV, filter for common colors, and prepare balanced dataset.
+    Load data from CSV, filter for common colors, split into train/test, 
+    and balance ONLY the training set.
     
     Args:
         csv_path: Path to the CSV file with color data
         top_n: Keep only the top N most common colors
+        test_size: Proportion of data to use for testing (0.0 to 1.0)
         balance_strategy: Class balancing strategy (see balance_classes for options)
         balance_ratio: Target balancing ratio (0.0 to 1.0, where 1.0 is perfect balance)
+        fixed_samples_per_class: For balanced_fixed strategy, target number of samples per class
         random_state: Random seed for reproducibility
     
     Returns:
-        X, y, le: Features, labels, and label encoder
+        X_train, X_test, y_train, y_test, le: Split features, labels, and label encoder
     """
     print(f"Loading data from {csv_path}...")
     try:
         df = pd.read_csv(csv_path)
     except FileNotFoundError:
         print(f"Error: File {csv_path} not found.")
-        return None, None, None
+        return None, None, None, None, None
 
     # Filter out rare colors
     print("Filtering data...")
@@ -167,15 +209,28 @@ def load_and_preprocess_data(csv_path, top_n=100, balance_strategy="none",
     le = LabelEncoder()
     y = le.fit_transform(y_text)
     
-    # Apply class balancing
-    X_balanced, y_balanced = balance_classes(
-        X, y, 
+    # IMPORTANT: Split into train/test BEFORE balancing
+    # This ensures test set maintains original distribution for fair comparison
+    print(f"\nSplitting data (test_size={test_size})...")
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y,
+        test_size=test_size,
+        random_state=random_state,
+        stratify=y
+    )
+    print(f"Train samples: {len(X_train):,}, Test samples: {len(X_test):,}")
+    
+    # Apply class balancing ONLY to training set
+    # Test set remains unbalanced to represent real-world distribution
+    X_train_balanced, y_train_balanced = balance_classes(
+        X_train, y_train, 
         strategy=balance_strategy, 
         sampling_ratio=balance_ratio,
+        fixed_samples_per_class=fixed_samples_per_class,
         random_state=random_state
     )
 
-    return X_balanced, y_balanced, le
+    return X_train_balanced, X_test, y_train_balanced, y_test, le
 
 
 class DataLoader:
@@ -188,25 +243,19 @@ class DataLoader:
     
     def load(self):
         """Load and prepare data for training."""
-        # Load and preprocess data
-        X, y, le = load_and_preprocess_data(
+        # Load and preprocess data (now includes train/test split and balancing)
+        X_train, X_test, y_train, y_test, le = load_and_preprocess_data(
             self.data_config["csv_path"],
             top_n=self.data_config["top_n_colors"],
+            test_size=self.data_config["test_size"],
             balance_strategy=self.data_config.get("balance_strategy", "none"),
             balance_ratio=self.data_config.get("balance_ratio", 1.0),
+            fixed_samples_per_class=self.data_config.get("fixed_samples_per_class"),
             random_state=self.seed
         )
         
-        if X is None or y is None:
+        if X_train is None or y_train is None:
             raise ValueError("Failed to load data")
-        
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y,
-            test_size=self.data_config["test_size"],
-            random_state=self.seed,
-            stratify=y
-        )
         
         num_classes = len(le.classes_)
         
