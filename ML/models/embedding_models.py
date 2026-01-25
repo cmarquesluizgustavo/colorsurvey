@@ -7,15 +7,16 @@ class EmbeddingModel(nn.Module):
     ):  # Small d for "psychological" space
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(input_dim, 64),
+            nn.Linear(input_dim, 16),
             nn.ReLU(),
-            nn.Linear(64, 64),
+            nn.Linear(16, 16),
             nn.ReLU(),
-            nn.Linear(64, embedding_dim),
+            nn.Linear(16, embedding_dim),
         )
 
     def forward(self, x):
-        z = self.net(x)
-        # L2 Normalization (Crucial for Contrastive/Triplet Loss)
-        z = nn.functional.normalize(z, p=2, dim=1)
-        return z
+        # z = self.net(x)
+        # # L2 Normalization (Crucial for Contrastive/Triplet Loss)
+        # z = nn.functional.normalize(z, p=2, dim=1)
+        # return z
+        return self.net(x)
