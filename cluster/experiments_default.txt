@@ -1,0 +1,15 @@
+# Experiment Configuration List
+# 
+# This file serves as a template for experiments.txt
+# Copy this file to experiments.txt and customize with your experiment paths
+# 
+# Format: One experiment config path per line (relative to project root)
+# Example: experiments/my_experiment_config.json
+#
+# The actual experiments.txt file is gitignored to keep your local
+# experiment configurations separate from the repository
+
+# Example experiments (uncomment and modify as needed):
+# experiments/xgb_baseline.json
+# experiments/mlp_15colors_baseline.json
+# experiments/mlp_129colors_balanced.json

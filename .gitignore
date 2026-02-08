@@ -50,3 +50,6 @@ logs/
 *csv
 *experiments
 analysis/non_colors.txt
+
+# Cluster-specific experiment list (use experiments_default.txt as template)
+cluster/experiments.txt
