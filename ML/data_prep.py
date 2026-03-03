@@ -7,6 +7,7 @@ from sklearn.model_selection import train_test_split
 from imblearn.over_sampling import RandomOverSampler
 from imblearn.under_sampling import RandomUnderSampler
 from collections import Counter
+from ML.embeddings import BagOfWordsEmbedder, rgb_to_oklch
 
 
 class ColorDataset(Dataset):
@@ -21,6 +22,27 @@ class ColorDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.data[idx], self.labels[idx]
+
+
+class ColorTextDataset(Dataset):
+    """Dataset for ColorCLIP: returns (oklch_color, bow_vector, label) tuples."""
+
+    def __init__(self, oklch_colors: np.ndarray, bow_vectors: np.ndarray, labels: np.ndarray):
+        """
+        Args:
+            oklch_colors: (N, 3) normalized OKLCH float array — model input & raw coords for ΔE
+            bow_vectors: (N, vocab_size) multi-hot float array
+            labels: (N,) integer class indices (used for false-negative masking in loss)
+        """
+        self.colors = torch.FloatTensor(oklch_colors)
+        self.bow_vectors = torch.FloatTensor(bow_vectors)
+        self.labels = torch.LongTensor(labels)
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, idx):
+        return self.colors[idx], self.bow_vectors[idx], self.labels[idx]
 
 
 def balance_classes(X, y, strategy="undersample", sampling_ratio=1.0, 
@@ -269,24 +291,75 @@ class DataLoader:
             "label_encoder": le
         }
         
-        # Add PyTorch DataLoaders if batch_size is specified (for metric learning)
+        # Add PyTorch DataLoaders if batch_size is specified
         if "batch_size" in self.data_config:
-            train_dataset = ColorDataset(X_train, y_train)
-            test_dataset = ColorDataset(X_test, y_test)
-            
-            data_bundle["train_loader"] = TorchDataLoader(
-                train_dataset,
-                batch_size=self.data_config["batch_size"],
-                shuffle=True,
-                num_workers=6,
-                persistent_workers=True
-            )
-            data_bundle["test_loader"] = TorchDataLoader(
-                test_dataset,
-                batch_size=self.data_config["batch_size"],
-                shuffle=False,
-                num_workers=4,
-                persistent_workers=True
-            )
-        
+            if self.config.get("trainer_type") == "color_clip":
+                data_bundle = self._build_clip_loaders(data_bundle, X_train, X_test, y_train, y_test, le)
+            else:
+                train_dataset = ColorDataset(X_train, y_train)
+                test_dataset = ColorDataset(X_test, y_test)
+
+                data_bundle["train_loader"] = TorchDataLoader(
+                    train_dataset,
+                    batch_size=self.data_config["batch_size"],
+                    shuffle=True,
+                    num_workers=6,
+                    persistent_workers=True
+                )
+                data_bundle["test_loader"] = TorchDataLoader(
+                    test_dataset,
+                    batch_size=self.data_config["batch_size"],
+                    shuffle=False,
+                    num_workers=4,
+                    persistent_workers=True
+                )
+
+        return data_bundle
+
+    def _build_clip_loaders(self, data_bundle, X_train, X_test, y_train, y_test, le):
+        """Build ColorTextDataset loaders for the color_clip trainer."""
+        vocab_size = self.data_config.get("vocab_size", 100)
+        color_space = self.data_config.get("color_space", "oklch")
+
+        if color_space == "oklch":
+            # X is normalized [0, 1] — scale back to [0, 255] for rgb_to_oklch
+            train_colors = rgb_to_oklch(X_train * 255.0, normalize=True)
+            test_colors = rgb_to_oklch(X_test * 255.0, normalize=True)
+        else:
+            # Already normalized [0, 1] RGB
+            train_colors = X_train
+            test_colors = X_test
+
+        # Recover color name strings from integer labels via the LabelEncoder
+        y_text_train = le.inverse_transform(y_train)
+        y_text_test = le.inverse_transform(y_test)
+
+        # Fit BoW vocabulary on training texts only
+        bow_embedder = BagOfWordsEmbedder(top_n_words=vocab_size)
+        bow_embedder.fit(y_text_train.tolist())
+
+        bow_train = bow_embedder.transform(y_text_train.tolist())
+        bow_test = bow_embedder.transform(y_text_test.tolist())
+
+        train_dataset = ColorTextDataset(train_colors, bow_train, y_train)
+        test_dataset = ColorTextDataset(test_colors, bow_test, y_test)
+
+        batch_size = self.data_config["batch_size"]
+        data_bundle["train_loader"] = TorchDataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=6,
+            persistent_workers=True,
+        )
+        data_bundle["test_loader"] = TorchDataLoader(
+            test_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=4,
+            persistent_workers=True,
+        )
+        data_bundle["vocab_size"] = bow_embedder.vocab_size
+        data_bundle["bow_embedder"] = bow_embedder
+
         return data_bundle
