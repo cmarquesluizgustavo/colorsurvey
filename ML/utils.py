@@ -51,7 +51,7 @@ def validate_config(config):
     if "trainer_type" not in config:
         raise ValueError("Config missing 'trainer_type' field")
     
-    if config["trainer_type"] not in ["metric_learning", "xgboost"]:
+    if config["trainer_type"] not in ["metric_learning", "xgboost", "color_clip"]:
         raise ValueError(f"Invalid trainer_type: {config['trainer_type']}")
     
     # Validate data config
@@ -83,10 +83,12 @@ class ExperimentLogger:
         self.csv_path = os.path.join(self.log_dir, "metrics.csv")
         self.csv_file = open(self.csv_path, "w", newline="")
         self.fieldnames = [
-            "timestamp", "global_step", "cycle", "step_type", 
-            "epoch_in_step", "step_time", 
-            "ce_loss", "triplet_loss", "total_loss", 
-            "accuracy", "youdens_j", "train_accuracy", "train_youdens_j"
+            "timestamp", "global_step", "cycle", "step_type",
+            "epoch_in_step", "step_time",
+            "ce_loss", "triplet_loss", "total_loss",
+            "accuracy", "youdens_j", "train_accuracy", "train_youdens_j",
+            # ColorCLIP retrieval metrics
+            "r_at_1", "r_at_5", "r_at_10", "median_rank", "delta_e", "temperature",
         ]
         self.csv_writer = csv.DictWriter(self.csv_file, fieldnames=self.fieldnames, 
                                          extrasaction='ignore')
