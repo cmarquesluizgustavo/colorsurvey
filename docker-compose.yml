@@ -7,9 +7,9 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: colorsurvey
     ports:
-      - "5433:5432"
+      - "17433:5432"
     volumes:
-      - ./data/pg_database:/var/lib/postgresql/data
+      - color_postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -17,4 +17,4 @@ services:
       retries: 5
 
 volumes:
-  postgres_data:
+  color_postgres_data:

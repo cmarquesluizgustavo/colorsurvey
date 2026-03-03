@@ -113,8 +113,8 @@ def main():
     print("SQLite to PostgreSQL Migration")
     print("=" * 60)
     
-    # Create SQLite databases from dumps
-    dumps = [
+    # Each entry: (sqlite_db_path, dump_file_path, table_prefix)
+    databases = [
         ('data/sqlite_temp_databases/mainsurvey.db', 'data/dumps/mainsurvey_sqldump.txt', 'mainsurvey_'),
         ('data/sqlite_temp_databases/satfaces.db', 'data/dumps/satfaces_sqldump.txt', 'satfaces_')
     ]
@@ -123,7 +123,7 @@ def main():
     print("\n🔌 Connecting to PostgreSQL...")
     pg_conn = psycopg2.connect(
         host=os.getenv('DB_HOST', 'localhost'),
-        port=int(os.getenv('DB_PORT', '5433')),
+        port=int(os.getenv('DB_PORT', '17433')),
         dbname=os.getenv('DB_NAME', 'colorsurvey'),
         user=os.getenv('DB_USER', 'postgres'),
         password=os.getenv('DB_PASSWORD', 'postgres')
@@ -142,13 +142,20 @@ def main():
     pg_conn.commit()
     print("   ✓ Tables dropped")
     
-    for db_file, dump_file, table_prefix in dumps:
-        # Remove existing SQLite DB if it exists
-        if os.path.exists(db_file):
-            os.remove(db_file)
+    for db_file, dump_file, table_prefix in databases:
+        created_from_dump = False
         
-        # Load dump into SQLite
-        load_sqlite_dump(db_file, dump_file)
+        if os.path.exists(db_file):
+            # Use existing SQLite database directly
+            print(f"\n📂 Using existing SQLite database: {db_file}")
+        elif os.path.exists(dump_file):
+            # Load from dump file into a new SQLite database
+            os.makedirs(os.path.dirname(db_file), exist_ok=True)
+            load_sqlite_dump(db_file, dump_file)
+            created_from_dump = True
+        else:
+            print(f"\n⚠️  Neither SQLite database ({db_file}) nor dump file ({dump_file}) found, skipping...")
+            continue
         
         # Connect to SQLite
         sqlite_conn = sqlite3.connect(db_file)
