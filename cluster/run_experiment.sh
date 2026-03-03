@@ -13,10 +13,14 @@ mv data_prep.py ML/ 2>/dev/null || true
 mv main.py ML/ 2>/dev/null || true
 mv metrics.py ML/ 2>/dev/null || true
 mv utils.py ML/ 2>/dev/null || true
+mv embeddings.py ML/ 2>/dev/null || true
 mv models/*.py ML/models/ 2>/dev/null || true
 mv trainers/*.py ML/trainers/ 2>/dev/null || true
 mv losses/*.py ML/losses/ 2>/dev/null || true
 mv __pycache__ ML/ 2>/dev/null || true
+
+# Rename CSV to match config expectations
+mv mainsurvey_data_with_space.csv mainsurvey_data.csv 2>/dev/null || true
 
 # Move config to experiments/ directory
 mkdir -p experiments
