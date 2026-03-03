@@ -45,28 +45,36 @@ echo ""
 echo "=================================="
 echo "Results Summary"
 echo "=================================="
-echo "Metrics files:      $(ls metrics/ | wc -l | xargs)"
-echo "Tensorboard dirs:   $(ls tensorboards/ | wc -l | xargs)"
-echo "Model dirs:         $(ls models/ | wc -l | xargs)"
+echo "Metrics files:      $(ls metrics/ 2>/dev/null | wc -l | xargs)"
+echo "Tensorboard dirs:   $(ls tensorboards/ 2>/dev/null | wc -l | xargs)"
+echo "Model dirs:         $(ls models/ 2>/dev/null | wc -l | xargs)"
 echo ""
 echo "Total size:"
-echo "  Metrics:      $(du -sh metrics/ | awk '{print $1}')"
-echo "  Tensorboards: $(du -sh tensorboards/ | awk '{print $1}')"
-echo "  Models:       $(du -sh models/ | awk '{print $1}')"
+[ -d metrics/ ]      && echo "  Metrics:      $(du -sh metrics/ | awk '{print $1}')"
+[ -d tensorboards/ ] && echo "  Tensorboards: $(du -sh tensorboards/ | awk '{print $1}')"
+[ -d models/ ]       && echo "  Models:       $(du -sh models/ | awk '{print $1}')"
 echo ""
 echo "Results CSV: experiment_results.csv"
 echo ""
+echo "Top 5 results:"
+head -6 experiment_results.csv | column -t -s,
 
-# Step 5: Generate plots
-echo "=================================="
-echo "Generating Visualization Plots"
-echo "=================================="
-python ../cluster/visualize_results.py
+# Cleanup downloaded tarball
+rm -f ${LOCAL_RESULTS_DIR}_results.tar.gz
+
+# Step 5: Generate plots (optional)
+VISUALIZE_SCRIPT="../cluster/visualize_results.py"
+if [ -f "$VISUALIZE_SCRIPT" ]; then
+    echo "=================================="
+    echo "Generating Visualization Plots"
+    echo "=================================="
+    python "$VISUALIZE_SCRIPT"
+    echo "View plots in: ${LOCAL_RESULTS_DIR}/plots/"
+else
+    echo "(Skipping plots — visualize_results.py not found)"
+fi
 
 echo ""
 echo "=================================="
-echo "✅ Done!"
+echo "✅ Done! Results in: ${LOCAL_RESULTS_DIR}/"
 echo "=================================="
-echo ""
-echo "View plots in: 3rd_experiments/plots/"
-echo "Launch TensorBoard: ./cluster/launch_tensorboard.sh"
