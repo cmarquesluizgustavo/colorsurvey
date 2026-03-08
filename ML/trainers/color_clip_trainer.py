@@ -12,8 +12,8 @@ from ML.utils import get_device
 
 class ColorCLIPTrainer(BaseTrainer):
     """
-    Trainer for ColorCLIP: contrastive dual-encoder alignment of OKLCH
-    colors and Bag-of-Words text descriptions via symmetric InfoNCE loss.
+    Trainer for ColorCLIP: contrastive dual-encoder alignment of colors 
+    and Bag-of-Words text descriptions via symmetric InfoNCE loss.
     """
 
     def __init__(self, config, data_bundle, logger):
