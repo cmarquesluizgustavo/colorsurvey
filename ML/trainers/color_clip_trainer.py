@@ -6,7 +6,7 @@ import torch.optim as optim
 from ML.trainers.base import BaseTrainer, TrainerFactory
 from ML.models.clip_models import ColorCLIPModel
 from ML.losses.clip_loss import CLIPInfoNCELoss
-from ML.metrics import compute_clip_metrics
+from ML.metrics import compute_clip_class_metrics
 from ML.utils import get_device
 
 
@@ -29,6 +29,8 @@ class ColorCLIPTrainer(BaseTrainer):
         """Initialize model, optimizer, and loss."""
         self.train_loader = self.data_bundle["train_loader"]
         self.test_loader = self.data_bundle["test_loader"]
+        self.bow_embedder = self.data_bundle["bow_embedder"]
+        self.label_encoder = self.data_bundle["label_encoder"]
         vocab_size = self.data_bundle["vocab_size"]
 
         model_cfg = self.config["model"]
@@ -75,8 +77,9 @@ class ColorCLIPTrainer(BaseTrainer):
             print(
                 f"Epoch {epoch:3d}/{self.epochs} | loss: {train_loss:.4f} | "
                 f"R@1: {r1:.4f}  R@5: {clip_metrics['r_at_5']:.4f}  "
-                f"Med.Rank: {clip_metrics['median_rank']:.1f}  "
-                f"ΔE: {clip_metrics['delta_e']:.4f}  τ: {temp:.4f}"
+                f"Med.Rank: {clip_metrics['median_rank']:.1f} "
+                f"R@10: {clip_metrics['r_at_10']:.4f}  "
+                f"τ: {temp:.4f}"
             )
 
             self.logger.log_metrics(epoch, epoch, {
@@ -87,7 +90,6 @@ class ColorCLIPTrainer(BaseTrainer):
                 "r_at_5": clip_metrics["r_at_5"],
                 "r_at_10": clip_metrics["r_at_10"],
                 "median_rank": clip_metrics["median_rank"],
-                "delta_e": clip_metrics["delta_e"],
                 "temperature": temp,
             })
 
@@ -105,35 +107,33 @@ class ColorCLIPTrainer(BaseTrainer):
 
     def evaluate(self, data_loader=None) -> dict:
         """
-        Evaluate on a subsample of the test set (config: max_eval_samples,
-        default 5000). Accumulates only that many embeddings on CPU, then
-        computes the full N×N ranking in one shot.
+        Class-level evaluation: each test color embedding is ranked
+        against K unique class text prototypes.
         """
         if data_loader is None:
             data_loader = self.test_loader
 
+        class_text_embeds = self._compute_class_prototypes()
+
         self.model.eval()
-        all_color, all_text, all_raw = [], [], []
+        all_color, all_labels = [], []
         collected = 0
 
         with torch.no_grad():
-            for colors, bow, _ in data_loader:
+            for colors, bow, labels in data_loader:
                 colors = colors.to(self.device)
-                bow = bow.to(self.device)
-                c_emb, t_emb = self.model(colors, bow)
+                c_emb, _ = self.model(colors, bow.to(self.device))
                 all_color.append(c_emb.cpu())
-                all_text.append(t_emb.cpu())
-                all_raw.append(colors.cpu())
+                all_labels.append(labels)
                 collected += colors.shape[0]
                 if collected >= self.max_eval_samples:
                     break
 
         n = self.max_eval_samples
         color_embeds = torch.cat(all_color)[:n]
-        text_embeds = torch.cat(all_text)[:n]
-        raw_colors = torch.cat(all_raw)[:n]
+        labels = torch.cat(all_labels)[:n]
 
-        return compute_clip_metrics(color_embeds, text_embeds, raw_colors)
+        return compute_clip_class_metrics(color_embeds, class_text_embeds, labels)
 
     def save_model(self):
         """Save model weights and config."""
@@ -148,6 +148,16 @@ class ColorCLIPTrainer(BaseTrainer):
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _compute_class_prototypes(self) -> torch.Tensor:
+        """Encode all K unique class names into text embeddings (K, D)."""
+        class_names = self.label_encoder.classes_
+        bow_matrix = self.bow_embedder.transform(class_names)
+        bow_tensor = torch.FloatTensor(bow_matrix).to(self.device)
+        self.model.eval()
+        with torch.no_grad():
+            class_text_embeds = self.model.encode_text(bow_tensor)
+        return class_text_embeds.cpu()
 
     def _train_epoch(self, epoch: int) -> float:
         """Run one training epoch. Returns mean loss."""
@@ -214,10 +224,15 @@ class ColorCLIPTrainer(BaseTrainer):
 
     @staticmethod
     def _print_metrics(metrics: dict):
+        pcr = metrics["per_class_rank"]
+        pcc = metrics["per_class_cosine"]
         print(
             f"  R@1: {metrics['r_at_1']:.4f}  R@5: {metrics['r_at_5']:.4f}  "
-            f"R@10: {metrics['r_at_10']:.4f}  Med.Rank: {metrics['median_rank']:.1f}  "
-            f"ΔE: {metrics['delta_e']:.4f}"
+            f"R@10: {metrics['r_at_10']:.4f}  Med.Rank: {metrics['median_rank']:.1f}\n"
+            f"  Per-class rank  — mean: {pcr.mean():.1f}  "
+            f"min: {pcr.min():.1f}  max: {pcr.max():.1f}\n"
+            f"  Per-class cosine — mean: {pcc.mean():.4f}  "
+            f"min: {pcc.min():.4f}  max: {pcc.max():.4f}"
         )
 
 
