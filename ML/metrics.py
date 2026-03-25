@@ -71,6 +71,9 @@ def compute_clip_class_metrics(
         - r_at_1, r_at_5, r_at_10, median_rank: scalar retrieval metrics
         - per_class_rank:   (K,) mean rank per class (label_encoder order)
         - per_class_cosine: (K,) mean cosine similarity per class
+        - mrr:              scalar Mean Reciprocal Rank
+        - youdens_j:        scalar Youden's J for top-1 predictions
+        - mean_log_odds:    scalar mean log-odds ratio (0 = perfect)
         - ranks:            (N,) 1-based rank of correct class per sample
         - top1_preds:       (N,) predicted class index per sample
     """
@@ -83,6 +86,16 @@ def compute_clip_class_metrics(
     ranks = (logits >= gt_scores.unsqueeze(1)).sum(dim=1)      # 1-based rank
     top1_preds = logits.argmax(dim=1)                          # (N,)
 
+    # Scalar metrics
+    mrr = (1.0 / ranks.float()).mean().item()
+    j = youdens_j(labels.numpy(), top1_preds.numpy(), k)
+
+    # Log-odds: softmax → log(p_pred / p_correct), 0 when correct
+    probs = torch.softmax(logits, dim=1)
+    p_correct = probs[torch.arange(probs.shape[0]), labels]
+    p_pred = probs[torch.arange(probs.shape[0]), top1_preds]
+    mean_log_odds = torch.log(p_pred / p_correct.clamp(min=1e-10)).mean().item()
+
     # Per-class aggregation: mean rank and mean cosine similarity
     counts = torch.zeros(k).scatter_add_(0, labels, torch.ones_like(labels, dtype=torch.float))
     counts.clamp_(min=1)
@@ -94,6 +107,9 @@ def compute_clip_class_metrics(
         "r_at_5": (ranks <= 5).float().mean().item(),
         "r_at_10": (ranks <= 10).float().mean().item(),
         "median_rank": ranks.float().median().item(),
+        "mrr": mrr,
+        "youdens_j": j,
+        "mean_log_odds": mean_log_odds,
         "per_class_rank": per_class_rank,
         "per_class_cosine": per_class_cosine,
         "ranks": ranks,

@@ -76,10 +76,10 @@ class ColorCLIPTrainer(BaseTrainer):
             temp = self.loss_fn.log_temperature.exp().item()
             print(
                 f"Epoch {epoch:3d}/{self.epochs} | loss: {train_loss:.4f} | "
-                f"R@1: {r1:.4f}  R@5: {clip_metrics['r_at_5']:.4f}  "
-                f"Med.Rank: {clip_metrics['median_rank']:.1f} "
+                f"R@1: {r1:.4f}  MRR: {clip_metrics['mrr']:.4f}  "
+                f"R@5: {clip_metrics['r_at_5']:.4f}  "
                 f"R@10: {clip_metrics['r_at_10']:.4f}  "
-                f"τ: {temp:.4f}"
+                f"Med.Rank: {clip_metrics['median_rank']:.1f}  τ: {temp:.4f}"
             )
 
             self.logger.log_metrics(epoch, epoch, {
@@ -90,6 +90,9 @@ class ColorCLIPTrainer(BaseTrainer):
                 "r_at_5": clip_metrics["r_at_5"],
                 "r_at_10": clip_metrics["r_at_10"],
                 "median_rank": clip_metrics["median_rank"],
+                "mrr": clip_metrics["mrr"],
+                "youdens_j": clip_metrics["youdens_j"],
+                "mean_log_odds": clip_metrics["mean_log_odds"],
                 "temperature": temp,
             })
 
@@ -227,8 +230,11 @@ class ColorCLIPTrainer(BaseTrainer):
         pcr = metrics["per_class_rank"]
         pcc = metrics["per_class_cosine"]
         print(
-            f"  R@1: {metrics['r_at_1']:.4f}  R@5: {metrics['r_at_5']:.4f}  "
+            f"  R@1: {metrics['r_at_1']:.4f}  MRR: {metrics['mrr']:.4f}  "
+            f"R@5: {metrics['r_at_5']:.4f}  "
             f"R@10: {metrics['r_at_10']:.4f}  Med.Rank: {metrics['median_rank']:.1f}\n"
+            f"  Youden's J: {metrics['youdens_j']:.4f}  "
+            f"Log-odds: {metrics['mean_log_odds']:.4f}\n"
             f"  Per-class rank  — mean: {pcr.mean():.1f}  "
             f"min: {pcr.min():.1f}  max: {pcr.max():.1f}\n"
             f"  Per-class cosine — mean: {pcc.mean():.4f}  "
