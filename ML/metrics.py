@@ -67,10 +67,12 @@ def compute_clip_class_metrics(
         labels:            (N,)   ground-truth class indices in [0, K)
 
     Returns:
-        dict with scalar metrics and per-class vectors:
+        dict with scalar metrics, per-class vectors, and per-sample vectors:
         - r_at_1, r_at_5, r_at_10, median_rank: scalar retrieval metrics
         - per_class_rank:   (K,) mean rank per class (label_encoder order)
         - per_class_cosine: (K,) mean cosine similarity per class
+        - ranks:            (N,) 1-based rank of correct class per sample
+        - top1_preds:       (N,) predicted class index per sample
     """
     k = class_text_embeds.shape[0]
 
@@ -79,6 +81,7 @@ def compute_clip_class_metrics(
 
     gt_scores = logits[torch.arange(logits.shape[0]), labels]  # (N,)
     ranks = (logits >= gt_scores.unsqueeze(1)).sum(dim=1)      # 1-based rank
+    top1_preds = logits.argmax(dim=1)                          # (N,)
 
     # Per-class aggregation: mean rank and mean cosine similarity
     counts = torch.zeros(k).scatter_add_(0, labels, torch.ones_like(labels, dtype=torch.float))
@@ -93,4 +96,6 @@ def compute_clip_class_metrics(
         "median_rank": ranks.float().median().item(),
         "per_class_rank": per_class_rank,
         "per_class_cosine": per_class_cosine,
+        "ranks": ranks,
+        "top1_preds": top1_preds,
     }
