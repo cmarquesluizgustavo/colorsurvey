@@ -88,7 +88,9 @@ class ExperimentLogger:
             "ce_loss", "triplet_loss", "total_loss",
             "accuracy", "youdens_j", "train_accuracy", "train_youdens_j",
             # ColorCLIP retrieval metrics
-            "r_at_1", "r_at_5", "r_at_10", "median_rank", "delta_e", "temperature",
+            "r_at_1", "r_at_5", "r_at_10", "median_rank",
+            "mrr", "mean_log_odds",
+            "delta_e", "temperature",
         ]
         self.csv_writer = csv.DictWriter(self.csv_file, fieldnames=self.fieldnames, 
                                          extrasaction='ignore')

@@ -62,7 +62,8 @@ class ColorCLIPTrainer(BaseTrainer):
         es_cfg = self.config["training"].get("early_stopping", {})
         self.patience = es_cfg.get("patience", 0)       # 0 = disabled
         self.min_delta = es_cfg.get("min_delta", 0.0)
-        self.best_r1 = -1.0
+        self.es_metric = es_cfg.get("metric", "r_at_1")
+        self.best_metric = -1.0
         self.patience_counter = 0
 
     def train(self):
@@ -98,9 +99,9 @@ class ColorCLIPTrainer(BaseTrainer):
                 "temperature": temp,
             })
 
-            if self._check_early_stopping(r1, epoch):
+            if self._check_early_stopping(clip_metrics):
                 print(f"\nEarly stopping at epoch {epoch} "
-                      f"(best R@1: {self.best_r1:.4f})")
+                      f"(best {self.es_metric}: {self.best_metric:.4f})")
                 self._restore_best()
                 break
         else:
@@ -196,13 +197,14 @@ class ColorCLIPTrainer(BaseTrainer):
         print()
         return total_loss / n_batches
 
-    def _check_early_stopping(self, r1: float, epoch: int) -> bool:
+    def _check_early_stopping(self, metrics: dict) -> bool:
         """Returns True if training should stop."""
         if self.patience <= 0:
             return False
 
-        if r1 > self.best_r1 + self.min_delta:
-            self.best_r1 = r1
+        val = metrics[self.es_metric]
+        if val > self.best_metric + self.min_delta:
+            self.best_metric = val
             self.patience_counter = 0
             # Save best checkpoint
             path = os.path.join(self.models_dir, "best_color_clip_model.pth")
@@ -211,7 +213,7 @@ class ColorCLIPTrainer(BaseTrainer):
                 "loss_fn_state_dict": self.loss_fn.state_dict(),
                 "config": self.config,
             }, path)
-            print(f"  [✓ Best] R@1: {r1:.4f} (saved)")
+            print(f"  [✓ Best] {self.es_metric}: {val:.4f} (saved)")
             return False
 
         self.patience_counter += 1
@@ -224,7 +226,7 @@ class ColorCLIPTrainer(BaseTrainer):
             ckpt = torch.load(path, map_location=self.device)
             self.model.load_state_dict(ckpt["model_state_dict"])
             self.loss_fn.load_state_dict(ckpt["loss_fn_state_dict"])
-            print(f"Restored best model (R@1: {self.best_r1:.4f})")
+            print(f"Restored best model ({self.es_metric}: {self.best_metric:.4f})")
         self.save_model()
 
     @staticmethod
