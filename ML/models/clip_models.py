@@ -8,25 +8,21 @@ import torch.nn.functional as F
 class ColorEncoder(nn.Module):
     """
     MLP color encoder: maps OKLCH coordinates to the joint embedding space.
-
-    Architecture (per spec):
-        Linear(3 -> 128) + BN + ReLU
-        Linear(128 -> 64) + BN + ReLU
-        Linear(64 -> embed_dim)
-        L2-normalize output
+    Hidden layers are configurable via `hidden_dims`.
     """
 
-    def __init__(self, embed_dim: int = 64):
+    def __init__(self, embed_dim: int = 64, hidden_dims: list[int] | None = None):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(3, 128),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            nn.Linear(64, embed_dim),
-        )
+        if hidden_dims is None:
+            raise ValueError("ColorEncoder requires hidden_dims to be specified")
+
+        layers: list[nn.Module] = []
+        in_dim = 3
+        for h in hidden_dims:
+            layers += [nn.Linear(in_dim, h), nn.BatchNorm1d(h), nn.ReLU()]
+            in_dim = h
+        layers.append(nn.Linear(in_dim, embed_dim))
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return F.normalize(self.net(x), p=2, dim=-1)
@@ -34,16 +30,22 @@ class ColorEncoder(nn.Module):
 
 class TextEncoder(nn.Module):
     """
-    Linear BoW text encoder: maps a multi-hot vocabulary vector to the
-    joint embedding space.
-
-    A bias-free linear layer effectively learns one embedding vector per word;
-    for multi-word labels the embeddings are summed.  Output is L2-normalized.
+    BoW text encoder: maps a multi-hot vocabulary vector to the joint
+    embedding space. Hidden layers are configurable via `hidden_dims`.
+    With no hidden layers (default), this is a bias-free linear lookup
+    where word embeddings are summed.
     """
 
-    def __init__(self, vocab_size: int, embed_dim: int = 64):
+    def __init__(self, vocab_size: int, embed_dim: int = 64,
+                 hidden_dims: list[int] | None = None):
         super().__init__()
-        self.proj = nn.Linear(vocab_size, embed_dim, bias=False)
+        layers: list[nn.Module] = []
+        in_dim = vocab_size
+        for h in (hidden_dims or []):
+            layers += [nn.Linear(in_dim, h, bias=False), nn.ReLU()]
+            in_dim = h
+        layers.append(nn.Linear(in_dim, embed_dim, bias=False))
+        self.proj = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return F.normalize(self.proj(x), p=2, dim=-1)
@@ -58,10 +60,13 @@ class ColorCLIPModel(nn.Module):
     keeping the model stateless w.r.t. training objective.
     """
 
-    def __init__(self, vocab_size: int, embed_dim: int = 64):
+    def __init__(self, vocab_size: int, embed_dim: int = 64,
+                 color_hidden_dims: list[int] | None = None,
+                 text_hidden_dims: list[int] | None = None):
         super().__init__()
-        self.color_encoder = ColorEncoder(embed_dim=embed_dim)
-        self.text_encoder = TextEncoder(vocab_size=vocab_size, embed_dim=embed_dim)
+        self.color_encoder = ColorEncoder(embed_dim=embed_dim, hidden_dims=color_hidden_dims)
+        self.text_encoder = TextEncoder(vocab_size=vocab_size, embed_dim=embed_dim,
+                                        hidden_dims=text_hidden_dims)
 
     def encode_color(self, colors: torch.Tensor) -> torch.Tensor:
         """Returns L2-normalized color embeddings."""

@@ -37,6 +37,8 @@ class ColorCLIPTrainer(BaseTrainer):
         self.model = ColorCLIPModel(
             vocab_size=vocab_size,
             embed_dim=model_cfg["embed_dim"],
+            color_hidden_dims=model_cfg.get("color_hidden_dims"),
+            text_hidden_dims=model_cfg.get("text_hidden_dims"),
         ).to(self.device)
 
         self.loss_fn = CLIPInfoNCELoss(
