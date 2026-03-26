@@ -5,9 +5,15 @@ import torch.optim as optim
 
 from ML.trainers.base import BaseTrainer, TrainerFactory
 from ML.models.clip_models import ColorCLIPModel
-from ML.losses.clip_loss import CLIPInfoNCELoss
+from ML.losses.clip_loss import OriginalCLIPLoss, MaskedCLIPLoss, SupConCLIPLoss
 from ML.metrics import compute_clip_class_metrics
 from ML.utils import get_device
+
+LOSS_REGISTRY = {
+    "original": OriginalCLIPLoss,
+    "masked": MaskedCLIPLoss,
+    "supcon": SupConCLIPLoss,
+}
 
 
 class ColorCLIPTrainer(BaseTrainer):
@@ -41,7 +47,9 @@ class ColorCLIPTrainer(BaseTrainer):
             text_hidden_dims=model_cfg.get("text_hidden_dims"),
         ).to(self.device)
 
-        self.loss_fn = CLIPInfoNCELoss(
+        loss_type = self.config["training"].get("loss_type", "original")
+        loss_cls = LOSS_REGISTRY[loss_type]
+        self.loss_fn = loss_cls(
             temperature=self.config["training"].get("temperature", 0.07)
         ).to(self.device)
 
