@@ -99,24 +99,28 @@ def detect_experiment_type(last_row):
 def parse_experiment_details(exp_name):
     """Extract model details from experiment name.
     
-    Handles both formats:
+    Handles formats:
       - Classic: ml_mlp_129colors_balanced_fixed_ctriplet_m0.5_dim16
-      - CLIP:    clip_oklch_129c_dim128_t0.03_lr0.0003_wd0.0
+      - CLIP v5: clip_oklch_129c_dim128_t0.03_lr0.0003_wd0.0
+      - CLIP v6: clip_15c_dim4_ch4_th32
     """
     # CLIP format
     if exp_name.startswith('clip_'):
         parts = exp_name.split('_')
         model = 'clip'
-        # color space (e.g. oklch)
-        color_space = parts[1] if len(parts) > 1 else 'unknown'
-        # number of colors (e.g. 129c -> 129)
         colors = None
         embed_dim = None
+        color_space = None
         for part in parts:
             if part.endswith('c') and part[:-1].isdigit():
                 colors = part[:-1]
-            if part.startswith('dim'):
-                embed_dim = part.replace('dim', '')
+            elif part.startswith('dim') and part[3:].isdigit():
+                embed_dim = part[3:]
+            elif part in ('rgb', 'oklch'):
+                color_space = part
+        # 6th experiments dropped color_space from the name (always rgb)
+        if color_space is None:
+            color_space = 'rgb'
         sampling = 'none'
         return model, colors, sampling, {'color_space': color_space, 'embed_dim': embed_dim}
 
@@ -137,6 +141,40 @@ def parse_experiment_details(exp_name):
     return model, colors, sampling, {}
 
 
+def _find_experiment_dirs():
+    """Find all experiment result directories across HTCondor output layouts.
+    
+    Scans:
+      - runs/<exp>/run_*/              (flat / manually merged)
+      - experiments/runs/<exp>/run_*/   (older layout)
+      - experiments/runs_N/<exp>/run_*/ (HTCondor per-job remapped)
+    
+    Returns dict {exp_name: run_dir_path} (latest run per experiment).
+    """
+    exp_dirs: dict[str, str] = {}
+
+    def _scan_base(base):
+        if not os.path.isdir(base):
+            return
+        for name in os.listdir(base):
+            path = os.path.join(base, name)
+            if not os.path.isdir(path):
+                continue
+            run_dirs = sorted(d for d in os.listdir(path) if d.startswith('run_'))
+            if run_dirs:
+                exp_dirs[name] = os.path.join(path, run_dirs[-1])
+
+    # Layout 1: flat runs/ directory
+    _scan_base('runs')
+    # Layout 2: experiments/runs/
+    _scan_base('experiments/runs')
+    # Layout 3: HTCondor per-job remapped (experiments/runs_0/, runs_1/, ...)
+    for remapped in sorted(glob.glob('experiments/runs_*')):
+        _scan_base(remapped)
+
+    return exp_dirs
+
+
 def main():
     os.chdir(os.path.expanduser('~/colorsurvey'))
     
@@ -147,27 +185,16 @@ def main():
     print(f"Experiment: {experiment_name}")
     print("=" * 60)
     
-    # Results live in runs/ (HTCondor output dir)
-    runs_base = 'runs'
-    if not os.path.exists(runs_base):
-        # fallback for older setups
-        runs_base = 'experiments/runs'
-    if not os.path.exists(runs_base):
-        print(f"No runs directory found!")
+    exp_results = _find_experiment_dirs()
+    if not exp_results:
+        print("No experiment results found!")
         return
+    
+    print(f"Discovered {len(exp_results)} experiment directories")
     
     completed_experiments = []
     
-    for exp_dir in os.listdir(runs_base):
-        exp_path = os.path.join(runs_base, exp_dir)
-        if not os.path.isdir(exp_path):
-            continue
-        
-        run_dirs = sorted([d for d in os.listdir(exp_path) if d.startswith('run_')])
-        if not run_dirs:
-            continue
-        
-        run_dir = os.path.join(exp_path, run_dirs[-1])
+    for exp_dir, run_dir in exp_results.items():
         metrics_file = os.path.join(run_dir, 'metrics.csv')
         
         if not os.path.exists(metrics_file):
@@ -204,6 +231,9 @@ def main():
                         'r_at_5':       float(last_row.get('r_at_5', 0) or 0),
                         'r_at_10':      float(last_row.get('r_at_10', 0) or 0),
                         'median_rank':  float(last_row.get('median_rank', 0) or 0),
+                        'mrr':          float(last_row.get('mrr', 0) or 0),
+                        'mean_log_odds': float(last_row.get('mean_log_odds', 0) or 0),
+                        'clip_youdens_j': float(last_row.get('youdens_j', 0) or 0),
                         'delta_e':      float(last_row.get('delta_e', 0) or 0),
                         'temperature':  float(last_row.get('temperature', 0) or 0),
                         'color_space':  extra.get('color_space', ''),
@@ -255,7 +285,9 @@ def main():
         'Rank', 'Experiment', 'Type', 'Model', 'Colors', 'Sampling',
         'Color_Space', 'Embed_Dim',
         # CLIP metrics
-        'Total_Loss', 'R_at_1', 'R_at_5', 'R_at_10', 'Median_Rank', 'Delta_E', 'Temperature',
+        'Total_Loss', 'R_at_1', 'R_at_5', 'R_at_10', 'Median_Rank',
+        'MRR', 'Mean_Log_Odds', 'CLIP_Youden_J',
+        'Delta_E', 'Temperature',
         # Classic metrics
         'Test_Accuracy', 'Youden_J', 'Train_Accuracy', 'Train_Youden_J',
         # Shared
@@ -282,6 +314,9 @@ def main():
                 'R_at_5': fmt(exp.get('r_at_5', '')),
                 'R_at_10': fmt(exp.get('r_at_10', '')),
                 'Median_Rank': fmt(exp.get('median_rank', '')),
+                'MRR': fmt(exp.get('mrr', '')),
+                'Mean_Log_Odds': fmt(exp.get('mean_log_odds', '')),
+                'CLIP_Youden_J': fmt(exp.get('clip_youdens_j', '')),
                 'Delta_E': fmt(exp.get('delta_e', '')),
                 'Temperature': fmt(exp.get('temperature', '')),
                 'Test_Accuracy': fmt(exp.get('test_accuracy', '')),
