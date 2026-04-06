@@ -1,0 +1,4 @@
+rapidfuzz
+pandas
+sqlalchemy
+psycopg2-binary
