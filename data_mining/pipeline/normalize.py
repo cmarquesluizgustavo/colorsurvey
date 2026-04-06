@@ -1,352 +1,45 @@
 """Phase 3: Word-level normalization — compound splitting, fuzzy matching, reconstruction."""
 
-import re
 from pathlib import Path
 from collections import Counter
 
 import pandas as pd
 from rapidfuzz import fuzz, process
 
+from .rules import (
+    NEVER_CORRECT, NOSPLIT_SUFFIXES, NOSPLIT_WORDS,
+    MERGE_SUFFIXES, DETERMINISTIC_NAME_MAP, DETERMINISTIC_WORD_MAP,
+)
+
+# ---------------------------------------------------------------------------
+# Paths & configuration
+# ---------------------------------------------------------------------------
+
 DATA_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = DATA_DIR / "output"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Paths to seed files (kept from original data_mining)
-SEED_28 = DATA_DIR / "28_color_normalization.txt"
-SEED_1500 = DATA_DIR / "1500_weird_color_normalization.txt"
+# Output file paths
+VOCAB_PATH = OUTPUT_DIR / "word_vocabulary.txt"
+FUZZY_WORD_REVIEW_PATH = OUTPUT_DIR / "fuzzy_word_review.csv"
+FUZZY_NAME_REVIEW_PATH = OUTPUT_DIR / "fuzzy_name_review.csv"
+TOKEN_MATCHES_PATH = OUTPUT_DIR / "all_token_matches.csv"
+COLOR_FREQ_PATH = OUTPUT_DIR / "color_frequencies.csv"
+WORD_FREQ_PATH = OUTPUT_DIR / "word_frequencies.csv"
 
-# Deterministic replacements applied before anything else
-_DETERMINISTIC_WORD_MAP = {
-    # British → American
-    "grey": "gray",
-    "greyish": "grayish",
-    "greyed": "grayed",
-    "greyey": "grayish",
-    "greay": "gray",
-    "gery": "gray",
-    "greyn": "green",  # typo, not gray
+# Seed vocabulary files (generic names — swap files without renaming code)
+SEED_CORE = DATA_DIR / "fuzzy_matching" / "top_100_colors.txt"
+SEED_EXTENDED = DATA_DIR / "fuzzy_matching" / "top_1250_colors.txt"
 
-    # Green typos
-    "gree": "green",
-    "gren": "green",
-    "greem": "green",
-    "grenn": "green",
-    "geen": "green",
-    "greeb": "green",
-    "grene": "green",
-    "groen": "green",
-    "grean": "green",
-    "grren": "green",
-    "geren": "green",
-    "gween": "green",
-    "greeeeen": "green",
-    "greeeen": "green",
-    "greeeeeeen": "green",
-    "greeeeeen": "green",
-    "greeeeeeeen": "green",
-
-    # Purple typos
-    "pruple": "purple",
-    "pueple": "purple",
-    "purpel": "purple",
-    "purplr": "purple",
-    "purble": "purple",
-    "puprle": "purple",
-    "poiple": "purple",
-    "purlpe": "purple",
-    "purplw": "purple",
-    "putple": "purple",
-    "pirple": "purple",
-    "murple": "purple",
-    "purpur": "purple",
-    "purpke": "purple",
-    "purpil": "purple",
-    "purpul": "purple",
-    "grurple": "purple",
-    "porple": "purple",
-    "ourple": "purple",
-    "purkle": "purple",
-
-    # Chartreuse typos
-    "charteuse": "chartreuse",
-    "chartruese": "chartreuse",
-    "chartruce": "chartreuse",
-    "chatreuse": "chartreuse",
-    "chartreus": "chartreuse",
-    "chatruse": "chartreuse",
-    "shartruse": "chartreuse",
-
-    # Fuchsia typos
-    "fuschia": "fuchsia",
-    "fucia": "fuchsia",
-    "fusha": "fuchsia",
-    "fuchisa": "fuchsia",
-    "fucha": "fuchsia",
-
-    # Mauve typos
-    "muave": "mauve",
-    "mouve": "mauve",
-    "moave": "mauve",
-    "mauv": "mauve",
-    "maube": "mauve",
-    "mauce": "mauve",
-    "malve": "mauve",
-
-    # Raspberry typos
-    "rasberry": "raspberry",
-
-    # Terracotta typos
-    "terracota": "terracotta",
-    "teracotta": "terracotta",
-
-    # Khaki typos
-    "kaki": "khaki",
-    "kahki": "khaki",
-    "kakhi": "khaki",
-    "karki": "khaki",
-    "kacki": "khaki",
-
-    # Taupe typos
-    "tope": "taupe",
-    "toupe": "taupe",
-    "taup": "taupe",
-    "toap": "taupe",
-    "toape": "taupe",
-
-    # Ochre typos
-    "ocre": "ochre",
-    "ocker": "ochre",
-    "ocra": "ochre",
-    "oker": "ochre",
-    "ochra": "ochre",
-    "ockre": "ochre",
-
-    # Lilac typos
-    "lila": "lilac",
-    "lilla": "lilac",
-    "lylac": "lilac",
-    "lilas": "lilac",
-    "lilic": "lilac",
-    "lilca": "lilac",
-    "lylic": "lilac",
-    "lilav": "lilac",
-
-    # Seafoam typos
-    "seafom": "seafoam",
-    "seaform": "seafoam",
-
-    # Blue typos
-    "bluue": "blue",
-    "bluw": "blue",
-
-    # Avocado typos
-    "avacado": "avocado",
-
-    # Beige typos
-    "beig": "beige",
-    "baige": "beige",
-    "biege": "beige",
-
-    # Fuchsia typos (additional)
-    "fuscia": "fuchsia",
-    "fushia": "fuchsia",
-    "fucshia": "fuchsia",
-    "fuscha": "fuchsia",
-
-    # Violet typos
-    "violot": "violet",
-    "voilet": "violet",
-    "viloet": "violet",
-
-    # Brown typos
-    "brow": "brown",
-
-    # Burgundy typos
-    "burgendy": "burgundy",
-
-    # Cream typos
-    "creme": "cream",
-
-    # Lavender typos
-    "lavendar": "lavender",
-
-    # Magenta typos
-    "magneta": "magenta",
-    "majenta": "magenta",
-
-    # Puce typos
-    "peuce": "puce",
-    "puse": "puce",
-
-    # Reddish typos
-    "redish": "reddish",
-
-    # Turquoise typos (additional)
-    "terquoise": "turquoise",
-    "torquise": "turquoise",
-    "turqois": "turquoise",
-    "turqiose": "turquoise",
-    "tourquise": "turquoise",
-    "turcoise": "turquoise",
-    "tourqoise": "turquoise",
-    "turqouis": "turquoise",
-    "turqoiuse": "turquoise",
-    "turquiose": "turquoise",
-    "turqouse": "turquoise",
-    "turquase": "turquoise",
-    "turquese": "turquoise",
-    "turquios": "turquoise",
-    "turqiouse": "turquoise",
-    "torquiose": "turquoise",
-    "torqouise": "turquoise",
-    "torqoise": "turquoise",
-    "tirquoise": "turquoise",
-    "turquis": "turquoise",
-    "turqouise": "turquoise",
-
-    # Blue typos (additional)
-    "bllue": "blue",
-    "blule": "blue",
-
-    # Pink typos
-    "pikn": "pink",
-
-    # Orange typos
-    "ornage": "orange",
-    "oragne": "orange",
-    "organe": "orange",
-    "oraneg": "orange",
-    "orance": "orange",
-    "orenge": "orange",
-    "oarnge": "orange",
-
-    # Brown typos (additional)
-    "bronw": "brown",
-    "brwon": "brown",
-    "borwn": "brown",
-    "bown": "brown",
-    "broen": "brown",
-    "brwn": "brown",
-
-    # Yellow typos
-    "yelloe": "yellow",
-    "yellpw": "yellow",
-    "yeloow": "yellow",
-
-    # Beige typos (additional)
-    "bage": "beige",
-    "bege": "beige",
-    "beigh": "beige",
-    "baise": "beige",
-    "bez": "beige",
-
-    # Fuchsia typos (more)
-    "fusca": "fuchsia",
-
-    # Cyan typos
-    "cyab": "cyan",
-    "cya": "cyan",
-
-    # Aqua typos
-    "aque": "aqua",
-    "aqau": "aqua",
-    "awua": "aqua",
-    "auqa": "aqua",
-    "auqua": "aqua",
-    "auqamarine": "aquamarine",
-
-    # Comparative modifiers → base (standalone they get stripped anyway)
-    "greener": "green",
-    "bluer": "blue",
-
-    # Short fragments commonly mismatched by fuzzy
-    "urple": "purple",
-    "purpl": "purple",
-    "marroon": "maroon",
-
-    # Alternate spellings / additional typos
-    "ocher": "ochre",
-    "marron": "maroon",
-    "blooo": "blue",
-    "blud": "blue",
-    "pinlk": "pink",
-    "pinl": "pink",
-    "turkiz": "turquoise",
-    "terqoise": "turquoise",
-    "forset": "forest",
-    "oliv": "olive",
-    "ligt": "light",
-    "lght": "light",
-    "bule": "blue",
-    "bleu": "blue",
-    "blu": "blue",
-    "bue": "blue",
-    "violte": "violet",
-    "saumon": "salmon",
-    "lavenda": "lavender",
-
-    # Blue typos (more)
-    "bloue": "blue",
-    "bluje": "blue",
-    "bluwe": "blue",
-
-    # Magenta typos (more)
-    "maginta": "magenta",
-
-    # Cantaloupe / cerise / sherbet
-    "cantelope": "cantaloupe",
-    "cerice": "cerise",
-    "sherbert": "sherbet",
-
-    # Turquoise typos (more)
-    "tourquiose": "turquoise",
-
-    # Avocado typos (more)
-    "avacodo": "avocado",
-
-    # Pale / navy typos
-    "plae": "pale",
-    "navi": "navy",
-
-    # Beige typos (more)
-    "bauge": "beige",
-
-    # Maroon alternate
-    "marrone": "maroon",
-
-    # Misc typos
-    "breen": "green",
-    "pinkle": "pink",
-    "purblue": "purple",
-    "limish": "lime",
-    "birght": "bright",
-    "lav": "lavender",
-    "sku": "sky",
-}
+# Pipeline parameters
+MIN_COLOR_FREQ = 10      # drop colors appearing fewer than this many times
+DEDUP_WORDS = True       # remove duplicate words in a color name
+SORT_WORDS = True        # alphabetically order words in a color name
 
 # Fuzzy matching thresholds
 AUTO_ACCEPT_SCORE = 90   # score >= this: auto-correct
 REVIEW_SCORE = 80        # score >= this but < AUTO_ACCEPT: propose for review
 MIN_FUZZY_LEN = 5        # skip fuzzy matching for words shorter than this
-
-# Words that should NEVER be fuzzy-corrected — they are valid as-is
-_NEVER_CORRECT = {
-    # Valid color words that look like typos of other words
-    "blush", "violent", "manila", "saturated", "desaturated",
-    # Valid -y adjective modifiers
-    "creamy", "cloudy", "fleshy", "steely", "earthy", "stormy",
-    "grassy", "watery", "swampy", "mossy", "leafy", "minty",
-    "smokey", "dusty", "rusty", "muddy", "sandy", "milky",
-    "chalky", "silky", "peachy", "rosy", "inky", "smoky",
-    "foresty",
-    # Other valid words
-    "burple", "barney", "brass", "bronze", "leather", "custard",
-    "caramel", "parrot", "creme", "slime", "hazel", "irish",
-    "vanilla", "plumb",
-    # Colors that look like typos of other words
-    "goldenrod", "buttercup", "candy", "amber", "orangered",
-    "night", "russet", "spruce", "fresh", "bubblegum", "limey",
-    "sickly", "gross",
-}
 
 
 def _load_seed_names(path: Path) -> list[str]:
@@ -364,7 +57,7 @@ def _split_words(name: str) -> list[str]:
 
 def _deterministic_replace(words: list[str]) -> list[str]:
     """Apply deterministic word-level substitutions (e.g. grey → gray)."""
-    return [_DETERMINISTIC_WORD_MAP.get(w, w) for w in words]
+    return [DETERMINISTIC_WORD_MAP.get(w, w) for w in words]
 
 
 # ---------------------------------------------------------------------------
@@ -375,26 +68,26 @@ def build_vocabulary(names: list[str], min_word_freq: int = 3) -> set[str]:
     """Build word vocabulary from known-good color names.
 
     Strategy:
-    1. Seed from the 28 canonical colors (all words)
-    2. Expand with words from the 1500 list that appear >= min_word_freq times
+    1. Seed from core colors (all words)
+    2. Expand with words from the extended list that appear >= min_word_freq times
     3. Words below threshold get fuzzy-matched or added as new
 
     Returns the vocabulary set.
     """
     vocab: set[str] = set()
 
-    # Round 1: seed from 28 canonical
-    seed_28 = _load_seed_names(SEED_28)
-    for name in seed_28:
+    # Round 1: seed from core colors
+    core_names = _load_seed_names(SEED_CORE)
+    for name in core_names:
         vocab.update(_split_words(name))
     # Apply deterministic fixes to the vocab itself
-    vocab = {_DETERMINISTIC_WORD_MAP.get(w, w) for w in vocab}
-    print(f"  Vocabulary after 28-seed: {len(vocab)} words")
+    vocab = {DETERMINISTIC_WORD_MAP.get(w, w) for w in vocab}
+    print(f"  Vocabulary after core-seed: {len(vocab)} words")
 
-    # Round 2: expand from 1500 list
-    seed_1500 = _load_seed_names(SEED_1500)
+    # Round 2: expand from extended list
+    extended_names = _load_seed_names(SEED_EXTENDED)
     word_counter: Counter[str] = Counter()
-    for name in seed_1500:
+    for name in extended_names:
         words = _deterministic_replace(_split_words(name))
         word_counter.update(words)
 
@@ -402,13 +95,13 @@ def build_vocabulary(names: list[str], min_word_freq: int = 3) -> set[str]:
     for word, count in word_counter.items():
         if count >= min_word_freq:
             vocab.add(word)
-    print(f"  Vocabulary after 1500-expansion (freq >= {min_word_freq}): {len(vocab)} words")
+    print(f"  Vocabulary after extended-expansion (freq >= {min_word_freq}): {len(vocab)} words")
 
     # Rare words: fuzzy match against vocab or add as new
     rare_words = {w for w, c in word_counter.items() if c < min_word_freq and w not in vocab}
     fuzzy_additions: list[dict] = []
     for word in sorted(rare_words):
-        if word in _NEVER_CORRECT:
+        if word in NEVER_CORRECT:
             vocab.add(word)
             continue
 
@@ -441,12 +134,11 @@ def build_vocabulary(names: list[str], min_word_freq: int = 3) -> set[str]:
     print(f"  Final vocabulary: {len(vocab)} words")
     if fuzzy_additions:
         review_df = pd.DataFrame(fuzzy_additions).sort_values("score", ascending=False)
-        review_path = OUTPUT_DIR / "fuzzy_word_review.csv"
-        review_df.to_csv(review_path, index=False)
+        review_df.to_csv(FUZZY_WORD_REVIEW_PATH, index=False)
         auto = sum(1 for r in fuzzy_additions if r["action"] == "auto")
         review = sum(1 for r in fuzzy_additions if r["action"] == "review")
         print(f"  Fuzzy word corrections: {auto} auto-accepted, {review} for review")
-        print(f"  Saved {review_path}")
+        print(f"  Saved {FUZZY_WORD_REVIEW_PATH}")
 
     return vocab
 
@@ -455,22 +147,6 @@ def build_vocabulary(names: list[str], min_word_freq: int = 3) -> set[str]:
 # Compound splitting
 # ---------------------------------------------------------------------------
 
-# Common suffixes that produce valid color adjectives — never split these
-_NOSPLIT_SUFFIXES = ("ish", "ey", "ly", "ry", "ty", "ny", "al", "er", "le")
-
-# Real English words that happen to contain color substrings — never split
-_NOSPLIT_WORDS = {
-    "blueberry", "strawberry", "cranberry", "raspberry", "blackberry",
-    "goldenrod", "eggplant", "eggshell", "champagne", "tangerine", "chocolate",
-    "charcoal", "pumpkin", "pistachio", "aubergine", "vermillion",
-    "chartreuse", "turquoise", "periwinkle", "cornflower",
-    "office", "officer", "golden", "violet", "scarlet",
-    "sandstone", "limestone", "brownstone", "cobblestone",
-    "marigold", "shamrock", "evergreen", "aquamarine",
-    "midnight", "watermelon", "bubblegum", "redwood", "lemongrass",
-    "skintone", "fleshtone", "gunmetal",
-}
-
 
 def _try_split(word: str, vocab: set[str]) -> list[str] | None:
     """Try splitting a single token into two known vocabulary words.
@@ -478,14 +154,14 @@ def _try_split(word: str, vocab: set[str]) -> list[str] | None:
     Only splits when BOTH parts are >= 3 chars and in the vocabulary.
     Returns None if no valid split or if the word is in the no-split list.
     """
-    if word in _NOSPLIT_WORDS:
+    if word in NOSPLIT_WORDS:
         return None
     # Don't split words that ARE a known word + suffix (greenish, bluey, etc.)
     # But only block if the base (without suffix) is itself in vocab
-    for suffix in _NOSPLIT_SUFFIXES:
+    for suffix in NOSPLIT_SUFFIXES:
         if word.endswith(suffix) and len(word) > len(suffix) + 2:
             base = word[:-len(suffix)]
-            base_norm = _DETERMINISTIC_WORD_MAP.get(base, base)
+            base_norm = DETERMINISTIC_WORD_MAP.get(base, base)
             if base_norm in vocab:
                 return None
 
@@ -493,8 +169,8 @@ def _try_split(word: str, vocab: set[str]) -> list[str] | None:
     for i in range(3, len(word) - 2):  # both parts must be >= 3 chars
         left, right = word[:i], word[i:]
         # Also accept parts that have a deterministic replacement in vocab
-        left_norm = _DETERMINISTIC_WORD_MAP.get(left, left)
-        right_norm = _DETERMINISTIC_WORD_MAP.get(right, right)
+        left_norm = DETERMINISTIC_WORD_MAP.get(left, left)
+        right_norm = DETERMINISTIC_WORD_MAP.get(right, right)
         if left_norm in vocab and right_norm in vocab:
             candidates.append((left_norm, right_norm))
 
@@ -528,21 +204,13 @@ def split_compounds(names: list[str], vocab: set[str]) -> dict[str, str]:
 
 def _build_word_corrections(vocab: set[str]) -> dict[str, str]:
     """Build corrections from fuzzy_word_review.csv (auto-accepted entries)."""
-    review_path = OUTPUT_DIR / "fuzzy_word_review.csv"
-    if not review_path.exists():
+    if not FUZZY_WORD_REVIEW_PATH.exists():
         return {}
-    df = pd.read_csv(review_path)
+    df = pd.read_csv(FUZZY_WORD_REVIEW_PATH)
     # Only apply auto-accepted corrections
     auto = df[df["action"] == "auto"]
     return dict(zip(auto["word"], auto["correction"]))
 
-
-# Deterministic name-level replacements (multi-word → single word, etc.)
-_DETERMINISTIC_NAME_MAP = {
-    "aqua marine": "aquamarine",
-    "sea foam": "seafoam",
-    "gun metal": "gunmetal",
-}
 
 
 def normalize_name(name: str, vocab: set[str], word_corrections: dict[str, str],
@@ -560,7 +228,7 @@ def normalize_name(name: str, vocab: set[str], word_corrections: dict[str, str],
 
     # Step 2: name-level deterministic replacements
     # Check if any key appears as a substring and replace it
-    for old, new in _DETERMINISTIC_NAME_MAP.items():
+    for old, new in DETERMINISTIC_NAME_MAP.items():
         if old in name:
             name = name.replace(old, new)
 
@@ -572,7 +240,7 @@ def normalize_name(name: str, vocab: set[str], word_corrections: dict[str, str],
     # Step 3+4: word corrections
     corrected: list[str] = []
     for w in words:
-        if w in _NEVER_CORRECT:
+        if w in NEVER_CORRECT:
             corrected.append(w)
         elif w in word_corrections:
             corrected.append(word_corrections[w])
@@ -588,11 +256,10 @@ def normalize_name(name: str, vocab: set[str], word_corrections: dict[str, str],
             corrected.append(w)
 
     # Step 5: Rejoin separated suffixes ("green ish" → "greenish", "orange y" → "orangey")
-    _MERGE_SUFFIXES = {"ish", "y", "ey"}
     merged: list[str] = []
     i = 0
     while i < len(corrected):
-        if i > 0 and corrected[i] in _MERGE_SUFFIXES:
+        if i > 0 and corrected[i] in MERGE_SUFFIXES:
             merged[-1] = merged[-1] + corrected[i]
         else:
             merged.append(corrected[i])
@@ -611,18 +278,16 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
 
     Generates review files in output/ and returns the normalized DataFrame.
     """
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     all_names = df["colorname"].tolist()
 
     print("\n--- Building word vocabulary ---")
     vocab = build_vocabulary(all_names)
 
     # Save vocabulary
-    vocab_path = OUTPUT_DIR / "word_vocabulary.txt"
-    with open(vocab_path, "w") as f:
+    with open(VOCAB_PATH, "w") as f:
         for w in sorted(vocab):
             f.write(w + "\n")
-    print(f"  Saved {vocab_path}")
+    print(f"  Saved {VOCAB_PATH}")
 
     print("\n--- Splitting compounds ---")
     compound_map = split_compounds(all_names, vocab)
@@ -652,10 +317,9 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
         )
         review.columns = ["original", "normalized", "frequency"]
         review = review.sort_values("frequency", ascending=False)
-        review_path = OUTPUT_DIR / "fuzzy_name_review.csv"
-        review.to_csv(review_path, index=False)
+        review.to_csv(FUZZY_NAME_REVIEW_PATH, index=False)
         print(f"  Names changed: {len(review)} unique mappings ({changed.shape[0]:,} rows)")
-        print(f"  Saved {review_path}")
+        print(f"  Saved {FUZZY_NAME_REVIEW_PATH}")
     else:
         print("  No names changed.")
 
@@ -664,8 +328,25 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
     print(f"\n  Unique names: {before_unique:,} → {after_unique:,} ({before_unique - after_unique:,} merged)")
     print(f"  Total rows preserved: {len(df):,}")
 
+    # --- Deduplicate words in each color name ---
+    if DEDUP_WORDS:
+        before = df["colorname"].nunique()
+        df["colorname"] = df["colorname"].apply(
+            lambda n: " ".join(dict.fromkeys(n.split()))
+        )
+        after = df["colorname"].nunique()
+        print(f"\n  Dedup words: {before:,} → {after:,} unique ({before - after:,} merged)")
+
+    # --- Alphabetically sort words in each color name ---
+    if SORT_WORDS:
+        before = df["colorname"].nunique()
+        df["colorname"] = df["colorname"].apply(
+            lambda n: " ".join(sorted(n.split()))
+        )
+        after = df["colorname"].nunique()
+        print(f"  Sort words: {before:,} → {after:,} unique ({before - after:,} merged)")
+
     # --- Frequency cutoff: drop colors with < MIN_COLOR_FREQ occurrences ---
-    MIN_COLOR_FREQ = 10
     freq = df["colorname"].value_counts()
     rare_names = set(freq[freq < MIN_COLOR_FREQ].index)
     mask_rare = df["colorname"].isin(rare_names)
@@ -712,18 +393,16 @@ def _save_token_matches(df: pd.DataFrame, compound_map: dict[str, str],
         })
 
     out = pd.DataFrame(records).sort_values("rows_affected", ascending=False)
-    path = OUTPUT_DIR / "all_token_matches.csv"
-    out.to_csv(path, index=False)
-    print(f"  Saved {path} ({len(out)} transformations)")
+    out.to_csv(TOKEN_MATCHES_PATH, index=False)
+    print(f"  Saved {TOKEN_MATCHES_PATH} ({len(out)} transformations)")
 
 
 def _save_color_frequencies(df: pd.DataFrame) -> None:
     """Save final color name frequencies."""
     freq = df["colorname"].value_counts().reset_index()
     freq.columns = ["colorname", "frequency"]
-    path = OUTPUT_DIR / "color_frequencies.csv"
-    freq.to_csv(path, index=False)
-    print(f"  Saved {path} ({len(freq)} unique colors)")
+    freq.to_csv(COLOR_FREQ_PATH, index=False)
+    print(f"  Saved {COLOR_FREQ_PATH} ({len(freq)} unique colors)")
 
 
 def _save_word_frequencies(df: pd.DataFrame) -> None:
@@ -732,9 +411,8 @@ def _save_word_frequencies(df: pd.DataFrame) -> None:
     for name in df["colorname"]:
         word_counts.update(name.split())
     freq = pd.DataFrame(word_counts.most_common(), columns=["word", "frequency"])
-    path = OUTPUT_DIR / "word_frequencies.csv"
-    freq.to_csv(path, index=False)
-    print(f"  Saved {path} ({len(freq)} unique words)")
+    freq.to_csv(WORD_FREQ_PATH, index=False)
+    print(f"  Saved {WORD_FREQ_PATH} ({len(freq)} unique words)")
 
 
 def apply_normalizations(df: pd.DataFrame) -> pd.DataFrame:
@@ -743,8 +421,6 @@ def apply_normalizations(df: pd.DataFrame) -> pd.DataFrame:
     Reads fuzzy_word_review.csv (user may have edited 'action' column)
     and re-runs normalization with the updated corrections.
     """
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
     # Re-run normalize (it reads the review file)
     df = normalize(df)
 

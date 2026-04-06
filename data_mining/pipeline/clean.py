@@ -60,6 +60,7 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
     Returns cleaned DataFrame.
     """
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    df = df[df["colorname"].notna()].copy()
     before = len(df)
     before_unique = df["colorname"].nunique()
 
