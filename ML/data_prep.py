@@ -319,6 +319,8 @@ class DataLoader:
     def _build_clip_loaders(self, data_bundle, X_train, X_test, y_train, y_test, le):
         """Build ColorTextDataset loaders for the color_clip trainer."""
         vocab_size = self.data_config.get("vocab_size", 100)
+        if vocab_size == "auto":
+            vocab_size = None  # BagOfWordsEmbedder will use all unique tokens
         color_space = self.data_config.get("color_space", "oklch")
 
         if color_space == "oklch":
