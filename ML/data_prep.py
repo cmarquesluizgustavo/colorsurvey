@@ -25,24 +25,29 @@ class ColorDataset(Dataset):
 
 
 class ColorTextDataset(Dataset):
-    """Dataset for ColorCLIP: returns (oklch_color, bow_vector, label) tuples."""
+    """Dataset for ColorCLIP: returns (oklch_color, bow_vector, label) tuples.
+    
+    Stores a compact (K, vocab_size) class-level BoW lookup table instead of
+    duplicating BoW vectors across all N samples. The per-sample BoW vector
+    is retrieved via label index at batch time.
+    """
 
-    def __init__(self, oklch_colors: np.ndarray, bow_vectors: np.ndarray, labels: np.ndarray):
+    def __init__(self, oklch_colors: np.ndarray, class_bow: np.ndarray, labels: np.ndarray):
         """
         Args:
-            oklch_colors: (N, 3) normalized OKLCH float array — model input & raw coords for ΔE
-            bow_vectors: (N, vocab_size) multi-hot float array
-            labels: (N,) integer class indices (used for false-negative masking in loss)
+            oklch_colors: (N, 3) normalized float array — model input
+            class_bow: (K, vocab_size) multi-hot float array — one row per class
+            labels: (N,) integer class indices mapping samples to class_bow rows
         """
         self.colors = torch.FloatTensor(oklch_colors)
-        self.bow_vectors = torch.FloatTensor(bow_vectors)
+        self.class_bow = torch.FloatTensor(class_bow)
         self.labels = torch.LongTensor(labels)
 
     def __len__(self):
         return len(self.labels)
 
     def __getitem__(self, idx):
-        return self.colors[idx], self.bow_vectors[idx], self.labels[idx]
+        return self.colors[idx], self.class_bow[self.labels[idx]], self.labels[idx]
 
 
 def balance_classes(X, y, strategy="undersample", sampling_ratio=1.0, 
@@ -332,19 +337,15 @@ class DataLoader:
             train_colors = X_train
             test_colors = X_test
 
-        # Recover color name strings from integer labels via the LabelEncoder
-        y_text_train = le.inverse_transform(y_train)
-        y_text_test = le.inverse_transform(y_test)
+        # Build class-level BoW lookup (K, vocab_size) instead of per-sample (N, vocab_size)
+        class_names = le.classes_.tolist()  # K unique class names, ordered by label index
 
-        # Fit BoW vocabulary on training texts only
         bow_embedder = BagOfWordsEmbedder(top_n_words=vocab_size)
-        bow_embedder.fit(y_text_train.tolist())
+        bow_embedder.fit(class_names)
+        class_bow = bow_embedder.transform(class_names)  # (K, vocab_size)
 
-        bow_train = bow_embedder.transform(y_text_train.tolist())
-        bow_test = bow_embedder.transform(y_text_test.tolist())
-
-        train_dataset = ColorTextDataset(train_colors, bow_train, y_train)
-        test_dataset = ColorTextDataset(test_colors, bow_test, y_test)
+        train_dataset = ColorTextDataset(train_colors, class_bow, y_train)
+        test_dataset = ColorTextDataset(test_colors, class_bow, y_test)
 
         batch_size = self.data_config["batch_size"]
         data_bundle["train_loader"] = TorchDataLoader(
