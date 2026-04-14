@@ -72,7 +72,7 @@ def extract() -> pd.DataFrame:
     print(f"  After char/length filter: {len(df):,}")
     print(f"  Unique color names: {df['colorname'].nunique():,}")
 
-    out_path = OUTPUT_DIR / "raw_extract.csv"
+    out_path = OUTPUT_DIR / "temp_extract.csv"
     df.to_csv(out_path, index=False)
     print(f"  Saved {out_path}")
     return df

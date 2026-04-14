@@ -424,9 +424,8 @@ def apply_normalizations(df: pd.DataFrame) -> pd.DataFrame:
     # Re-run normalize (it reads the review file)
     df = normalize(df)
 
-    # Drop the helper column for export
-    if "colorname_original" in df.columns:
-        df = df.drop(columns=["colorname_original"])
+    # Keep only the columns needed for ML
+    df = df[["r", "g", "b", "colorname"]]
 
     out_path = OUTPUT_DIR / "cleaned_colors.csv"
     df.to_csv(out_path, index=False)

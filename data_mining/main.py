@@ -22,8 +22,8 @@ OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 
 
 def _load_raw() -> pd.DataFrame:
-    """Load raw_extract.csv if it exists, otherwise run extraction."""
-    raw_path = OUTPUT_DIR / "raw_extract.csv"
+    """Load temp_extract.csv if it exists, otherwise run extraction."""
+    raw_path = OUTPUT_DIR / "temp_extract.csv"
     if raw_path.exists():
         print(f"Loading cached {raw_path}...")
         return pd.read_csv(raw_path)
@@ -82,6 +82,11 @@ def cmd_apply():
     print("PHASE 3+4: Normalize + Export")
     print("=" * 60)
     apply_normalizations(df)
+
+    # Clean up temp cache
+    temp = OUTPUT_DIR / "temp_extract.csv"
+    if temp.exists():
+        temp.unlink()
 
 
 COMMANDS = {
