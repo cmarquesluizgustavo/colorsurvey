@@ -10,10 +10,12 @@ This script:
 
 Usage:
     python3 collect_results.py [experiment_name]
+    python3 collect_results.py [experiment_name] --type clip
+    python3 collect_results.py [experiment_name] --type clip --sort Colors,Loss_Type,Embed_Dim
     
 Example:
     python3 collect_results.py 3rd_experiments
-    python3 collect_results.py 4th_experiments
+    python3 collect_results.py 8th_experiments --local --type clip --sort Colors,Loss_Type,Embed_Dim
 
 Run on cluster: python3 collect_results.py 4th_experiments
 Then download: scp my_cluster:colorsurvey/4th_experiments_results.tar.gz .
@@ -26,8 +28,22 @@ import csv
 import glob
 import shutil
 import tarfile
-from pathlib import Path
-from datetime import datetime
+
+
+# ── Column profiles ──────────────────────────────────────────────────
+
+CLIP_FIELDNAMES = [
+    'Experiment', 'Colors', 'Loss_Type', 'Embed_Dim',
+    'Total_Loss', 'R_at_1', 'R_at_5', 'R_at_10', 'Median_Rank',
+    'MRR', 'Mean_Log_Odds', 'CLIP_Youden_J',
+    'Temperature', 'Final_Cycle', 'Timestamp', 'Status',
+]
+
+# Columns that sort ascending (grouping); everything else sorts descending (metrics)
+ASCENDING_COLUMNS = {'Experiment', 'Colors', 'Loss_Type', 'Embed_Dim',
+                     'Final_Cycle', 'Timestamp', 'Status'}
+
+LOSS_TYPE_MAP = {'mask': 'masked', 'orig': 'original', 'supc': 'supcon'}
 
 
 def parse_experiment_name(config_file):
@@ -141,6 +157,60 @@ def parse_experiment_details(exp_name):
     return model, colors, sampling, {}
 
 
+def _parse_clip_loss_type(exp_name):
+    """Extract loss type from CLIP experiment name.
+
+    Names look like: clip_96c_mask_dim64_ch16_th128
+    The loss token is the part after '<N>c_'.
+    """
+    parts = exp_name.split('_')
+    for i, part in enumerate(parts):
+        if part.endswith('c') and part[:-1].isdigit() and i + 1 < len(parts):
+            return LOSS_TYPE_MAP.get(parts[i + 1], parts[i + 1])
+    return ''
+
+
+def _build_clip_entry(exp_dir, last_row):
+    """Build a dict with only CLIP-profile keys from a metrics row."""
+    _, colors, _, extra = parse_experiment_details(exp_dir)
+    return {
+        'Experiment':     exp_dir,
+        'Colors':         int(colors) if colors else 0,
+        'Loss_Type':      _parse_clip_loss_type(exp_dir),
+        'Embed_Dim':      int(extra.get('embed_dim', 0) or 0),
+        'Total_Loss':     float(last_row.get('total_loss', 0) or 0),
+        'R_at_1':         float(last_row.get('r_at_1', 0) or 0),
+        'R_at_5':         float(last_row.get('r_at_5', 0) or 0),
+        'R_at_10':        float(last_row.get('r_at_10', 0) or 0),
+        'Median_Rank':    float(last_row.get('median_rank', 0) or 0),
+        'MRR':            float(last_row.get('mrr', 0) or 0),
+        'Mean_Log_Odds':  float(last_row.get('mean_log_odds', 0) or 0),
+        'CLIP_Youden_J':  float(last_row.get('youdens_j', 0) or 0),
+        'Temperature':    float(last_row.get('temperature', 0) or 0),
+        'Final_Cycle':    last_row.get('cycle', ''),
+        'Timestamp':      last_row.get('timestamp', ''),
+        'Status':         'completed',
+    }
+
+
+def _multi_sort_key(entry, sort_cols):
+    """Return a tuple for multi-column sorting.
+
+    Grouping columns (in ASCENDING_COLUMNS) sort ascending.
+    Metric columns sort descending (negated).
+    """
+    keys = []
+    for col in sort_cols:
+        val = entry.get(col, '')
+        if col in ASCENDING_COLUMNS:
+            # ascending: str/int as-is
+            keys.append((val if not isinstance(val, str) else val.lower()))
+        else:
+            # descending: negate numeric, or invert string
+            keys.append(-val if isinstance(val, (int, float)) else val)
+    return tuple(keys)
+
+
 def _find_experiment_dirs():
     """Find all experiment result directories across HTCondor output layouts.
     
@@ -175,27 +245,155 @@ def _find_experiment_dirs():
     return exp_dirs
 
 
+def _find_local_metrics(experiment_name):
+    """Build {exp_name: metrics_path} from <experiment>/metrics/ directory.
+
+    Used with --local to rebuild experiment_results.csv without needing
+    the original runs/ directories.
+    """
+    metrics_dir = os.path.join(experiment_name, 'metrics')
+    result = {}
+    if not os.path.isdir(metrics_dir):
+        return result
+    for f in os.listdir(metrics_dir):
+        if f.endswith('_metrics.csv'):
+            exp_name = f.replace('_metrics.csv', '')
+            result[exp_name] = os.path.join(metrics_dir, f)
+    return result
+
+
 def main():
-    os.chdir(os.path.expanduser('~/colorsurvey'))
-    
-    # Get experiment name from command line or use default
-    experiment_name = sys.argv[1] if len(sys.argv) > 1 else '3rd_experiments'
-    
+    local_mode = '--local' in sys.argv
+    exp_type_flag = None
+    sort_cols = None
+    positional = []
+    skip_next = False
+    for i, a in enumerate(sys.argv[1:], 1):
+        if skip_next:
+            skip_next = False
+            continue
+        if a == '--local':
+            continue
+        if a == '--type':
+            exp_type_flag = sys.argv[i + 1] if i + 1 < len(sys.argv) else None
+            skip_next = True
+            continue
+        if a == '--sort':
+            sort_cols = [c.strip() for c in sys.argv[i + 1].split(',')]
+            skip_next = True
+            continue
+        positional.append(a)
+    experiment_name = positional[0] if positional else '3rd_experiments'
+
+    if not local_mode:
+        os.chdir(os.path.expanduser('~/colorsurvey'))
+
     print("Collecting completed experiment results...")
     print(f"Experiment: {experiment_name}")
+    if local_mode:
+        print("Mode: local (rebuilding CSV from metrics/ directory)")
     print("=" * 60)
+
+    if local_mode:
+        local_metrics = _find_local_metrics(experiment_name)
+        if not local_metrics:
+            print("No metrics files found!")
+            return
+        print(f"Found {len(local_metrics)} metrics files")
+        # Build a fake exp_results dict: {exp_name: metrics_path}
+        # We'll handle this below by reading directly from the path
+        exp_results = local_metrics
+    else:
+        exp_results = _find_experiment_dirs()
+        if not exp_results:
+            print("No experiment results found!")
+            return
+        print(f"Discovered {len(exp_results)} experiment directories")
     
-    exp_results = _find_experiment_dirs()
-    if not exp_results:
-        print("No experiment results found!")
+    # ── CLIP-only path ────────────────────────────────────────────────
+    if exp_type_flag == 'clip':
+        completed = []
+        for exp_dir, run_dir in exp_results.items():
+            metrics_file = run_dir if local_mode else os.path.join(run_dir, 'metrics.csv')
+            if not os.path.exists(metrics_file):
+                continue
+            try:
+                with open(metrics_file, 'r') as f:
+                    rows = list(csv.DictReader(f))
+                if not rows or detect_experiment_type(rows[-1]) != 'clip':
+                    continue
+                completed.append(_build_clip_entry(exp_dir, rows[-1]))
+            except Exception as e:
+                print(f"Error processing {exp_dir}: {e}")
+
+        print(f"Found {len(completed)} completed CLIP experiments")
+        if not completed:
+            print("No completed CLIP experiments found!")
+            return
+
+        # Sort
+        if sort_cols:
+            completed.sort(key=lambda e: _multi_sort_key(e, sort_cols))
+        else:
+            completed.sort(key=lambda e: -e.get('R_at_1', 0))
+
+        # Write CSV
+        if local_mode:
+            csv_path = os.path.join(experiment_name, 'experiment_results.csv')
+        else:
+            results_dir = f'{experiment_name}_results'
+            os.makedirs(f'{results_dir}/metrics', exist_ok=True)
+            os.makedirs(f'{results_dir}/tensorboards', exist_ok=True)
+            os.makedirs(f'{results_dir}/models', exist_ok=True)
+            csv_path = f'{results_dir}/experiment_results.csv'
+
+        fmt = lambda v: f"{v:.4f}" if isinstance(v, float) else v
+        with open(csv_path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=CLIP_FIELDNAMES)
+            writer.writeheader()
+            for entry in completed:
+                writer.writerow({k: fmt(entry[k]) for k in CLIP_FIELDNAMES})
+
+        print(f"Created {csv_path} ({len(completed)} experiments)")
+
+        if local_mode:
+            print("Done!")
+            return
+
+        # Copy artifacts (same as default path)
+        for entry in completed:
+            exp_name = entry['Experiment']
+            run_dir = exp_results[exp_name]
+            metrics_src = os.path.join(run_dir, 'metrics.csv') if not local_mode else run_dir
+            if os.path.exists(metrics_src):
+                shutil.copy2(metrics_src, f'{results_dir}/metrics/{exp_name}_metrics.csv')
+            for tb_file in glob.glob(f'{run_dir}/events.out.tfevents.*'):
+                tb_dst = f'{results_dir}/tensorboards/{exp_name}'
+                os.makedirs(tb_dst, exist_ok=True)
+                shutil.copy2(tb_file, tb_dst)
+            models_src = os.path.join(run_dir, 'models')
+            if os.path.exists(models_src):
+                model_dst = f'{results_dir}/models/{exp_name}'
+                os.makedirs(model_dst, exist_ok=True)
+                for mf in os.listdir(models_src):
+                    if mf.endswith('.pth') or mf.endswith('.json'):
+                        shutil.copy2(os.path.join(models_src, mf), os.path.join(model_dst, mf))
+
+        tarball_name = f'{experiment_name}_results.tar.gz'
+        print(f"\nCreating {tarball_name}...")
+        with tarfile.open(tarball_name, 'w:gz') as tar:
+            tar.add(results_dir, arcname=results_dir)
+        print(f"Created {tarball_name}")
+        print(f"\nTo download: scp zeus:~/colorsurvey/{tarball_name} .")
+        shutil.rmtree(results_dir)
+        print("\nDone!")
         return
-    
-    print(f"Discovered {len(exp_results)} experiment directories")
-    
+
+    # ── Default path (union format, unchanged) ────────────────────────
     completed_experiments = []
     
     for exp_dir, run_dir in exp_results.items():
-        metrics_file = os.path.join(run_dir, 'metrics.csv')
+        metrics_file = run_dir if local_mode else os.path.join(run_dir, 'metrics.csv')
         
         if not os.path.exists(metrics_file):
             continue
@@ -274,13 +472,14 @@ def main():
     completed_experiments = clip_exps + classic_exps
     
     # Output dirs
-    results_dir = f'{experiment_name}_results'
-    os.makedirs(f'{results_dir}/metrics', exist_ok=True)
-    os.makedirs(f'{results_dir}/tensorboards', exist_ok=True)
-    os.makedirs(f'{results_dir}/models', exist_ok=True)
-    
-    # Unified CSV with all columns
-    csv_path = f'{results_dir}/experiment_results.csv'
+    if local_mode:
+        csv_path = os.path.join(experiment_name, 'experiment_results.csv')
+    else:
+        results_dir = f'{experiment_name}_results'
+        os.makedirs(f'{results_dir}/metrics', exist_ok=True)
+        os.makedirs(f'{results_dir}/tensorboards', exist_ok=True)
+        os.makedirs(f'{results_dir}/models', exist_ok=True)
+        csv_path = f'{results_dir}/experiment_results.csv'
     fieldnames = [
         'Rank', 'Experiment', 'Type', 'Model', 'Colors', 'Sampling',
         'Color_Space', 'Embed_Dim',
@@ -330,6 +529,11 @@ def main():
     
     print(f"Created {csv_path}")
     
+    if local_mode:
+        print(f"\nRebuilt CSV with {len(completed_experiments)} experiments")
+        print("Done!")
+        return
+
     # Copy metrics, tensorboards, models
     for exp in completed_experiments:
         exp_name = exp['experiment']

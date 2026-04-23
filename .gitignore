@@ -53,3 +53,6 @@ analysis/non_colors.txt
 
 # Cluster-specific experiment list (use experiments_default.txt as template)
 cluster/experiments.txt
+data_mining/blacklists/
+data_mining/fuzzy_matching/
+data_mining/output/
