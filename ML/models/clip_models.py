@@ -51,6 +51,32 @@ class TextEncoder(nn.Module):
         return F.normalize(self.proj(x), p=2, dim=-1)
 
 
+# ===== EXPERIMENTAL: learnable per-class prototypes (easy to remove) ========
+# To remove: delete this class, delete the `text_encoder_type` branch in
+# ColorCLIPModel.__init__, and drop the `text_encoder`/`num_classes` config
+# args in the trainer. Nothing else depends on it.
+class LearnablePrototypeTextEncoder(nn.Module):
+    """
+    Replaces the BoW text tower with a bank of free, learnable per-class
+    prototype vectors (one row per class) — no shared-token coupling, so
+    compound names are not tethered to their single-token parents.
+
+    Only valid with loss_type="prototype". The input `x` is ignored entirely —
+    we always return the full (K, D) prototype bank. The prototype loss feeds
+    the (K, *) class table here (so the result is the K prototypes in label
+    order); the shared eval forward feeds per-sample BoW but discards this
+    output, so ignoring `x` is correct in both paths.
+    """
+
+    def __init__(self, num_classes: int, embed_dim: int = 64):
+        super().__init__()
+        self.prototypes = nn.Parameter(torch.randn(num_classes, embed_dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.normalize(self.prototypes, p=2, dim=-1)
+# ============================================================================
+
+
 class ColorCLIPModel(nn.Module):
     """
     Dual-encoder ColorCLIP model.
@@ -62,11 +88,20 @@ class ColorCLIPModel(nn.Module):
 
     def __init__(self, vocab_size: int, embed_dim: int = 64,
                  color_hidden_dims: list[int] | None = None,
-                 text_hidden_dims: list[int] | None = None):
+                 text_hidden_dims: list[int] | None = None,
+                 text_encoder_type: str = "bow",
+                 num_classes: int | None = None):
         super().__init__()
         self.color_encoder = ColorEncoder(embed_dim=embed_dim, hidden_dims=color_hidden_dims)
-        self.text_encoder = TextEncoder(vocab_size=vocab_size, embed_dim=embed_dim,
-                                        hidden_dims=text_hidden_dims)
+        # EXPERIMENTAL branch (easy to remove): swap BoW tower for learnable prototypes.
+        if text_encoder_type == "learnable":
+            if num_classes is None:
+                raise ValueError("text_encoder_type='learnable' requires num_classes")
+            self.text_encoder = LearnablePrototypeTextEncoder(num_classes=num_classes,
+                                                              embed_dim=embed_dim)
+        else:
+            self.text_encoder = TextEncoder(vocab_size=vocab_size, embed_dim=embed_dim,
+                                            hidden_dims=text_hidden_dims)
 
     def encode_color(self, colors: torch.Tensor) -> torch.Tensor:
         """Returns L2-normalized color embeddings."""
