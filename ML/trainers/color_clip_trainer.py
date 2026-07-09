@@ -5,7 +5,9 @@ import torch.optim as optim
 
 from ML.trainers.base import BaseTrainer, TrainerFactory
 from ML.models.clip_models import ColorCLIPModel
-from ML.losses.clip_loss import OriginalCLIPLoss, MaskedCLIPLoss, SupConCLIPLoss
+from ML.losses.clip_loss import (
+    OriginalCLIPLoss, MaskedCLIPLoss, SupConCLIPLoss, PrototypeCLIPLoss,
+)
 from ML.metrics import compute_clip_class_metrics
 from ML.utils import get_device
 
@@ -13,6 +15,7 @@ LOSS_REGISTRY = {
     "original": OriginalCLIPLoss,
     "masked": MaskedCLIPLoss,
     "supcon": SupConCLIPLoss,
+    "prototype": PrototypeCLIPLoss,
 }
 
 
@@ -47,11 +50,18 @@ class ColorCLIPTrainer(BaseTrainer):
             text_hidden_dims=model_cfg.get("text_hidden_dims"),
         ).to(self.device)
 
-        loss_type = self.config["training"].get("loss_type", "original")
-        loss_cls = LOSS_REGISTRY[loss_type]
-        self.loss_fn = loss_cls(
-            temperature=self.config["training"].get("temperature", 0.07)
-        ).to(self.device)
+        self.loss_type = self.config["training"].get("loss_type", "original")
+        loss_kwargs = {"temperature": self.config["training"].get("temperature", 0.07)}
+
+        # Prototype mode classifies each color against the K fixed class
+        # prototypes, so cache the (K, vocab_size) class BoW table on device.
+        if self.loss_type == "prototype":
+            class_bow = self.bow_embedder.transform(self.label_encoder.classes_)
+            self.class_bow_tensor = torch.FloatTensor(class_bow).to(self.device)
+            loss_kwargs["t2c_weight"] = self.config["training"].get("t2c_weight", 1.0)
+
+        loss_cls = LOSS_REGISTRY[self.loss_type]
+        self.loss_fn = loss_cls(**loss_kwargs).to(self.device)
 
         # Single optimizer for model + learnable temperature
         lr = self.config["training"]["lr"]
@@ -186,7 +196,14 @@ class ColorCLIPTrainer(BaseTrainer):
             labels = labels.to(self.device)
 
             self.optimizer.zero_grad()
-            color_embeds, text_embeds = self.model(colors, bow)
+            if self.loss_type == "prototype":
+                # Columns are the K class prototypes (encoded with grad each
+                # step so the text tower still trains); the per-sample bow is
+                # unused. Rows are the batch colors.
+                color_embeds = self.model.encode_color(colors)
+                text_embeds = self.model.encode_text(self.class_bow_tensor)
+            else:
+                color_embeds, text_embeds = self.model(colors, bow)
             loss = self.loss_fn(color_embeds, text_embeds, labels)
             loss.backward()
             self.optimizer.step()

@@ -115,6 +115,64 @@ class MaskedCLIPLoss(BaseCLIPLoss):
         return (loss_c2t + loss_t2c) / 2.0
 
 
+class PrototypeCLIPLoss(BaseCLIPLoss):
+    """
+    Symmetric prototype loss for the (N, K) regime.
+
+    Columns are the K class text prototypes (one per color name, never
+    duplicated), rows are the N batch color samples. Both directions are read
+    off a single (N, K) similarity matrix:
+
+      color->text: standard K-way classification — each color is matched to its
+        class name. No duplicate columns, hence no false negatives. All K
+        classes are present every batch as columns, but rare classes still need
+        rebalancing, since a class only gets "pull" signal when it appears as
+        a row.
+      text->color: each class prototype present in the batch is pulled toward
+        all of its samples via SupCon-style soft targets (the one-to-many
+        direction).
+
+    Args:
+        t2c_weight: relative weight of the (hard, one-to-many) text->color term.
+            Loss = (c2t + t2c_weight * t2c) / (1 + t2c_weight). 1.0 (default) is
+            the symmetric 50/50 average; smaller values down-weight t->c so the
+            useful color->text classification signal is not diluted.
+    """
+
+    def __init__(self, temperature: float = 0.07, t2c_weight: float = 1.0):
+        super().__init__(temperature)
+        self.t2c_weight = t2c_weight
+
+    def forward(
+        self,
+        color_embeds: torch.Tensor,
+        text_embeds: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Args:
+            color_embeds: (N, D) L2-normalized color embeddings
+            text_embeds:  (K, D) L2-normalized class prototype embeddings
+            labels:       (N,) integer class indices in [0, K)
+
+        Returns:
+            Scalar loss.
+        """
+        logits = self.compute_logits(color_embeds, text_embeds)  # (N, K)
+
+        # color->text: each color classified against the K prototypes
+        loss_c2t = F.cross_entropy(logits, labels)
+
+        # text->color: each present prototype matches all its samples (soft targets)
+        present = labels.unique()                            # (P,)
+        logits_t2c = logits.t()[present]                     # (P, N)
+        pos = labels.unsqueeze(0) == present.unsqueeze(1)    # (P, N)
+        soft_targets = pos.float() / pos.sum(dim=1, keepdim=True)
+        loss_t2c = F.cross_entropy(logits_t2c, soft_targets)
+
+        return (loss_c2t + self.t2c_weight * loss_t2c) / (1.0 + self.t2c_weight)
+
+
 class SupConCLIPLoss(BaseCLIPLoss):
     """
     Supervised Contrastive InfoNCE (CLIP) loss.
