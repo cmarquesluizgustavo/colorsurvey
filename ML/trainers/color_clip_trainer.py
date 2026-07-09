@@ -59,6 +59,11 @@ class ColorCLIPTrainer(BaseTrainer):
             class_bow = self.bow_embedder.transform(self.label_encoder.classes_)
             self.class_bow_tensor = torch.FloatTensor(class_bow).to(self.device)
             loss_kwargs["t2c_weight"] = self.config["training"].get("t2c_weight", 1.0)
+            if self.config["training"].get("class_weights"):
+                if self.config["data"].get("sampler") == "class_balanced":
+                    print("⚠️  class_weights AND class_balanced sampler are both on "
+                          "— this double-corrects the imbalance. Use one, not both.")
+                loss_kwargs["class_weights"] = self._compute_class_weights()
 
         loss_cls = LOSS_REGISTRY[self.loss_type]
         self.loss_fn = loss_cls(**loss_kwargs).to(self.device)
@@ -172,6 +177,13 @@ class ColorCLIPTrainer(BaseTrainer):
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _compute_class_weights(self) -> torch.Tensor:
+        """Balanced inverse-frequency weights from training labels: w_k = N / (K * count_k)."""
+        y_train = torch.as_tensor(self.data_bundle["y_train"], dtype=torch.long)
+        k = len(self.label_encoder.classes_)
+        counts = torch.bincount(y_train, minlength=k).float().clamp(min=1)
+        return counts.sum() / (k * counts)
 
     def _compute_class_prototypes(self) -> torch.Tensor:
         """Encode all K unique class names into text embeddings (K, D)."""

@@ -126,21 +126,28 @@ class PrototypeCLIPLoss(BaseCLIPLoss):
       color->text: standard K-way classification — each color is matched to its
         class name. No duplicate columns, hence no false negatives. All K
         classes are present every batch as columns, but rare classes still need
-        rebalancing, since a class only gets "pull" signal when it appears as
-        a row.
+        rebalancing (class_weights and/or a class-balanced sampler), since a
+        class only gets "pull" signal when it appears as a row.
       text->color: each class prototype present in the batch is pulled toward
         all of its samples via SupCon-style soft targets (the one-to-many
         direction).
 
     Args:
+        class_weights: optional (K,) tensor of per-class weights applied to the
+            color->text direction. Use inverse-frequency weights to stop the
+            frequent classes from dominating the gradient on a long tail.
+            None (default) = unweighted.
         t2c_weight: relative weight of the (hard, one-to-many) text->color term.
             Loss = (c2t + t2c_weight * t2c) / (1 + t2c_weight). 1.0 (default) is
             the symmetric 50/50 average; smaller values down-weight t->c so the
             useful color->text classification signal is not diluted.
     """
 
-    def __init__(self, temperature: float = 0.07, t2c_weight: float = 1.0):
+    def __init__(self, temperature: float = 0.07, class_weights: torch.Tensor = None,
+                 t2c_weight: float = 1.0):
         super().__init__(temperature)
+        # Registered as a buffer so it moves with .to(device); may be None.
+        self.register_buffer("class_weights", class_weights)
         self.t2c_weight = t2c_weight
 
     def forward(
@@ -161,7 +168,7 @@ class PrototypeCLIPLoss(BaseCLIPLoss):
         logits = self.compute_logits(color_embeds, text_embeds)  # (N, K)
 
         # color->text: each color classified against the K prototypes
-        loss_c2t = F.cross_entropy(logits, labels)
+        loss_c2t = F.cross_entropy(logits, labels, weight=self.class_weights)
 
         # text->color: each present prototype matches all its samples (soft targets)
         present = labels.unique()                            # (P,)

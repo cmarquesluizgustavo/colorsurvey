@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset, DataLoader as TorchDataLoader
+from torch.utils.data import Dataset, DataLoader as TorchDataLoader, WeightedRandomSampler
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 from imblearn.over_sampling import RandomOverSampler
@@ -348,10 +348,28 @@ class DataLoader:
         test_dataset = ColorTextDataset(test_colors, class_bow, y_test)
 
         batch_size = self.data_config["batch_size"]
+
+        # Optional class-balanced row sampling: draw each class equally often as
+        # a batch row (P(sample) ∝ 1/class_count) instead of frequency-weighted.
+        # Mutually exclusive with shuffle. Columns are unaffected — they are
+        # always all K prototypes — so this only rebalances the positive signal.
+        train_sampler = None
+        shuffle = True
+        if self.data_config.get("sampler") == "class_balanced":
+            counts = np.bincount(y_train, minlength=len(class_names))
+            sample_weights = 1.0 / counts[y_train]
+            train_sampler = WeightedRandomSampler(
+                weights=torch.as_tensor(sample_weights, dtype=torch.double),
+                num_samples=len(y_train),
+                replacement=True,
+            )
+            shuffle = False
+
         data_bundle["train_loader"] = TorchDataLoader(
             train_dataset,
             batch_size=batch_size,
-            shuffle=True,
+            shuffle=shuffle,
+            sampler=train_sampler,
             num_workers=6,
             persistent_workers=True,
         )
