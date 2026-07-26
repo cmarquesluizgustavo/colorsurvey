@@ -98,7 +98,7 @@ class ColorCLIPTrainer(BaseTrainer):
               f"on {self.device}...")
 
         for epoch in range(1, self.epochs + 1):
-            train_loss = self._train_epoch(epoch)
+            train_loss, train_components = self._train_epoch(epoch)
             clip_metrics = self.evaluate()
 
             r1 = clip_metrics["r_at_1"]
@@ -115,6 +115,7 @@ class ColorCLIPTrainer(BaseTrainer):
                 "step_type": "Train",
                 "epoch_in_step": epoch,
                 "total_loss": train_loss,
+                **train_components,
                 "r_at_1": r1,
                 "r_at_5": clip_metrics["r_at_5"],
                 "r_at_10": clip_metrics["r_at_10"],
@@ -238,10 +239,11 @@ class ColorCLIPTrainer(BaseTrainer):
             class_text_embeds = self.model.encode_text(bow_tensor)
         return class_text_embeds.cpu()
 
-    def _train_epoch(self, epoch: int) -> float:
-        """Run one training epoch. Returns mean loss."""
+    def _train_epoch(self, epoch: int):
+        """Run one training epoch. Returns (mean_loss, mean_loss_components)."""
         self.model.train()
         total_loss = 0.0
+        component_sums = {}
         n_batches = len(self.train_loader)
 
         t0 = time.time()
@@ -264,6 +266,8 @@ class ColorCLIPTrainer(BaseTrainer):
             self.optimizer.step()
 
             total_loss += loss.item()
+            for key, value in getattr(self.loss_fn, "last_components", {}).items():
+                component_sums[key] = component_sums.get(key, 0.0) + value
 
             if batch_idx % max(1, n_batches // 5) == 0 or batch_idx == n_batches:
                 print(
@@ -275,7 +279,8 @@ class ColorCLIPTrainer(BaseTrainer):
                 )
 
         print()
-        return total_loss / n_batches
+        mean_components = {key: value / n_batches for key, value in component_sums.items()}
+        return total_loss / n_batches, mean_components
 
     def _check_early_stopping(self, metrics: dict) -> bool:
         """Returns True if training should stop."""

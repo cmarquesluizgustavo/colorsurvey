@@ -174,8 +174,19 @@ class PrototypeCLIPLoss(BaseCLIPLoss):
         present = labels.unique()                            # (P,)
         logits_t2c = logits.t()[present]                     # (P, N)
         pos = labels.unsqueeze(0) == present.unsqueeze(1)    # (P, N)
-        soft_targets = pos.float() / pos.sum(dim=1, keepdim=True)
+        positives_per_class = pos.sum(dim=1, keepdim=True)
+        soft_targets = pos.float() / positives_per_class
         loss_t2c = F.cross_entropy(logits_t2c, soft_targets)
+
+        # t->c has many right answers per row (all of a class's samples in the
+        # batch), so even a perfect model can't beat this floor: it's the cost
+        # of spreading a bet over `positives_per_class` targets instead of one.
+        floor = positives_per_class.float().log().mean()
+        self.last_components = {
+            "loss_c2t": loss_c2t.item(),
+            "loss_t2c": loss_t2c.item(),
+            "loss_t2c_above_floor": (loss_t2c - floor).item(),
+        }
 
         return (loss_c2t + self.t2c_weight * loss_t2c) / (1.0 + self.t2c_weight)
 
