@@ -49,7 +49,7 @@ class ColorCLIPTrainer(BaseTrainer):
             embed_dim=model_cfg["embed_dim"],
             color_hidden_dims=model_cfg.get("color_hidden_dims"),
             text_hidden_dims=model_cfg.get("text_hidden_dims"),
-            text_encoder_type=model_cfg.get("text_encoder", "bow"),  # EXPERIMENTAL: "learnable"
+            text_encoder_type=model_cfg.get("text_encoder", "bow"),  # or "learnable", see LearnablePrototypeTextEncoder
             num_classes=self.data_bundle["num_classes"],
         ).to(self.device)
 

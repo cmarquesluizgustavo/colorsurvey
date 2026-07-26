@@ -51,10 +51,7 @@ class TextEncoder(nn.Module):
         return F.normalize(self.proj(x), p=2, dim=-1)
 
 
-# ===== EXPERIMENTAL: learnable per-class prototypes (easy to remove) ========
-# To remove: delete this class, delete the `text_encoder_type` branch in
-# ColorCLIPModel.__init__, and drop the `text_encoder`/`num_classes` config
-# args in the trainer. Nothing else depends on it.
+# ===== Negative result, kept as documentation (see docstring) ==============
 class LearnablePrototypeTextEncoder(nn.Module):
     """
     Replaces the BoW text tower with a bank of free, learnable per-class
@@ -66,6 +63,14 @@ class LearnablePrototypeTextEncoder(nn.Module):
     the (K, *) class table here (so the result is the K prototypes in label
     order); the shared eval forward feeds per-sample BoW but discards this
     output, so ignoring `x` is correct in both paths.
+
+    Tested hypothesis (2026-07): BoW word-sharing ("light orange" = light +
+    orange) glues compound names to their parents and causes the model's
+    confusions between them. Result: this encoder fully de-crowded the name
+    vectors (mean nearest-neighbor cosine 0.887 -> 0.291) and **no retrieval
+    metric changed** (96-color R@1 0.484 vs 0.485 for BoW). Conclusion: the
+    confusion lives in the pixels, not the name vectors. Kept as executable
+    documentation of this negative result.
     """
 
     def __init__(self, num_classes: int, embed_dim: int = 64):
@@ -93,7 +98,7 @@ class ColorCLIPModel(nn.Module):
                  num_classes: int | None = None):
         super().__init__()
         self.color_encoder = ColorEncoder(embed_dim=embed_dim, hidden_dims=color_hidden_dims)
-        # EXPERIMENTAL branch (easy to remove): swap BoW tower for learnable prototypes.
+        # See LearnablePrototypeTextEncoder's docstring for why this branch exists.
         if text_encoder_type == "learnable":
             if num_classes is None:
                 raise ValueError("text_encoder_type='learnable' requires num_classes")
