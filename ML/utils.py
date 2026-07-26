@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import os
 import csv
+import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -139,7 +140,6 @@ def plot_training_metrics(run_dir):
         import pandas as pd
         import matplotlib
         matplotlib.use('Agg')  # Non-interactive backend
-        import matplotlib.pyplot as plt
     except ImportError:
         print("Warning: pandas or matplotlib not available, skipping plot")
         return None
@@ -155,15 +155,83 @@ def plot_training_metrics(run_dir):
     df = pd.read_csv(csv_path)
     
     # Determine trainer type and plot
+    if 'r_at_1' in df.columns and df['r_at_1'].notna().any():
+        return _plot_color_clip(df, run_dir)
     if 'step_type' in df.columns and df['step_type'].str.contains('Step').any():
         return _plot_metric_learning(df, run_dir)
     else:
         return _plot_xgboost(df, run_dir)
 
 
+def _plot_color_clip(df, save_dir):
+    """Plot ColorCLIP training curves (original/masked/supcon/prototype)."""
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle('ColorCLIP Training Progress', fontsize=16, fontweight='bold')
+    x = df['epoch_in_step']
+
+    # Plot 1: Loss (total, plus components when logged — see loss_c2t/loss_t2c_above_floor)
+    ax = axes[0, 0]
+    ax.plot(x, df['total_loss'], marker='o', label='Total', linewidth=2, markersize=5, color='navy')
+    if 'loss_c2t' in df.columns and df['loss_c2t'].notna().any():
+        ax.plot(x, df['loss_c2t'], marker='s', label='c->t', linewidth=2, markersize=5, color='steelblue')
+    if 'loss_t2c_above_floor' in df.columns and df['loss_t2c_above_floor'].notna().any():
+        ax.plot(x, df['loss_t2c_above_floor'], marker='^', label='t->c (above floor)',
+                linewidth=2, markersize=5, color='coral')
+    ax.set_xlabel('Epoch', fontsize=11)
+    ax.set_ylabel('Loss', fontsize=11)
+    ax.set_title('Training Loss', fontsize=12, fontweight='bold')
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+
+    # Plot 2: Retrieval @ k
+    ax = axes[0, 1]
+    ax.plot(x, df['r_at_1'], marker='o', label='R@1', linewidth=2, markersize=5, color='navy')
+    ax.plot(x, df['r_at_5'], marker='s', label='R@5', linewidth=2, markersize=5, color='steelblue')
+    ax.plot(x, df['r_at_10'], marker='^', label='R@10', linewidth=2, markersize=5, color='coral')
+    if 'class_oriented_r_at_1' in df.columns and df['class_oriented_r_at_1'].notna().any():
+        ax.plot(x, df['class_oriented_r_at_1'], marker='d', label='class-oriented R@1',
+                linewidth=2, markersize=5, color='darkgreen', linestyle='--')
+    ax.set_xlabel('Epoch', fontsize=11)
+    ax.set_ylabel('Recall', fontsize=11)
+    ax.set_title('Retrieval Accuracy', fontsize=12, fontweight='bold')
+    ax.legend(fontsize=9, loc='best')
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim([0, 1])
+
+    # Plot 3: MRR and median rank
+    ax = axes[1, 0]
+    ax.plot(x, df['mrr'], marker='o', label='MRR', linewidth=2, markersize=5, color='navy')
+    ax.set_xlabel('Epoch', fontsize=11)
+    ax.set_ylabel('MRR', fontsize=11, color='navy')
+    ax.set_title('MRR & Median Rank', fontsize=12, fontweight='bold')
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='upper left', fontsize=9)
+    if 'median_rank' in df.columns:
+        ax2 = ax.twinx()
+        ax2.plot(x, df['median_rank'], marker='^', label='Median Rank',
+                 linewidth=2, markersize=5, color='coral')
+        ax2.set_ylabel('Median Rank', fontsize=11, color='coral')
+        ax2.legend(loc='upper right', fontsize=9)
+
+    # Plot 4: Temperature
+    ax = axes[1, 1]
+    if 'temperature' in df.columns:
+        ax.plot(x, df['temperature'], marker='o', linewidth=2, markersize=5, color='darkgreen')
+    ax.set_xlabel('Epoch', fontsize=11)
+    ax.set_ylabel('Temperature', fontsize=11)
+    ax.set_title('Learned Temperature', fontsize=12, fontweight='bold')
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    output_path = save_dir / 'training_curves.png'
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    return output_path
+
+
 def _plot_metric_learning(df, save_dir):
     """Plot metric learning training curves."""
-    import matplotlib.pyplot as plt
     
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     fig.suptitle('Metric Learning Training Progress', fontsize=16, fontweight='bold')
@@ -246,7 +314,6 @@ def _plot_metric_learning(df, save_dir):
 
 def _plot_xgboost(df, save_dir):
     """Plot XGBoost training curves."""
-    import matplotlib.pyplot as plt
     
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     fig.suptitle('XGBoost Training Progress', fontsize=16, fontweight='bold')
