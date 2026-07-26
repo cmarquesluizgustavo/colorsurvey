@@ -119,7 +119,12 @@ class ColorCLIPTrainer(BaseTrainer):
                 "r_at_10": clip_metrics["r_at_10"],
                 "median_rank": clip_metrics["median_rank"],
                 "mrr": clip_metrics["mrr"],
+                "avg_rank": clip_metrics["avg_rank"],
+                "class_oriented_r_at_1": clip_metrics["class_oriented_r_at_1"],
+                "class_oriented_r_at_5": clip_metrics["class_oriented_r_at_5"],
+                "class_oriented_r_at_10": clip_metrics["class_oriented_r_at_10"],
                 "youdens_j": clip_metrics["youdens_j"],
+                "youdens_j_at_5": clip_metrics["youdens_j_at_5"],
                 "mean_log_odds": clip_metrics["mean_log_odds"],
                 "temperature": temp,
             })

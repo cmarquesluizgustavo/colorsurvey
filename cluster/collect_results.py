@@ -432,7 +432,6 @@ def main():
                         'mrr':          float(last_row.get('mrr', 0) or 0),
                         'mean_log_odds': float(last_row.get('mean_log_odds', 0) or 0),
                         'clip_youdens_j': float(last_row.get('youdens_j', 0) or 0),
-                        'delta_e':      float(last_row.get('delta_e', 0) or 0),
                         'temperature':  float(last_row.get('temperature', 0) or 0),
                         'color_space':  extra.get('color_space', ''),
                         'embed_dim':    extra.get('embed_dim', ''),
@@ -448,7 +447,7 @@ def main():
                         'train_youdens_j': float(last_row.get('train_youdens_j', 0) or 0),
                         # clip fields empty
                         'total_loss': '', 'r_at_1': '', 'r_at_5': '', 'r_at_10': '',
-                        'median_rank': '', 'delta_e': '', 'temperature': '',
+                        'median_rank': '', 'temperature': '',
                         'color_space': '', 'embed_dim': '',
                     })
                 
@@ -486,7 +485,7 @@ def main():
         # CLIP metrics
         'Total_Loss', 'R_at_1', 'R_at_5', 'R_at_10', 'Median_Rank',
         'MRR', 'Mean_Log_Odds', 'CLIP_Youden_J',
-        'Delta_E', 'Temperature',
+        'Temperature',
         # Classic metrics
         'Test_Accuracy', 'Youden_J', 'Train_Accuracy', 'Train_Youden_J',
         # Shared
@@ -516,7 +515,6 @@ def main():
                 'MRR': fmt(exp.get('mrr', '')),
                 'Mean_Log_Odds': fmt(exp.get('mean_log_odds', '')),
                 'CLIP_Youden_J': fmt(exp.get('clip_youdens_j', '')),
-                'Delta_E': fmt(exp.get('delta_e', '')),
                 'Temperature': fmt(exp.get('temperature', '')),
                 'Test_Accuracy': fmt(exp.get('test_accuracy', '')),
                 'Youden_J': fmt(exp.get('youdens_j', '')),

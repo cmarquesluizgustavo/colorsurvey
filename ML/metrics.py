@@ -21,6 +21,40 @@ def youdens_j(y_true, y_pred, num_classes):
     return j
 
 
+def youdens_j_at_k(topk_preds: torch.Tensor, labels: torch.Tensor, k: int, num_classes: int):
+    """
+    Per-class Youden's J at k: a class c counts as a "positive prediction" for
+    a sample when c appears anywhere in that sample's top-k, not just at rank 1.
+
+        J_c@k = sensitivity_c@k - false_positive_rate_c@k
+        sensitivity_c@k = fraction of c's own samples with c in their top-k
+        FPR_c@k         = fraction of samples of OTHER classes with c in their top-k
+
+    Args:
+        topk_preds:  (N, >=k) predicted class indices per sample, best first
+        labels:      (N,) ground-truth class indices
+        k:           cutoff
+        num_classes: K
+
+    Returns:
+        (per_class_j, mean_j): (K,) tensor and its scalar mean
+    """
+    topk = topk_preds[:, :k]
+    n = labels.shape[0]
+
+    counts = torch.zeros(num_classes).scatter_add_(0, labels, torch.ones(n))
+    hits = (topk == labels.unsqueeze(1)).any(dim=1).float()  # true label in own top-k
+    true_pos = torch.zeros(num_classes).scatter_add_(0, labels, hits)
+    contains = torch.bincount(topk.flatten(), minlength=num_classes).float()  # any sample with c in its top-k
+
+    sensitivity = true_pos / counts.clamp(min=1)
+    false_pos = contains - true_pos
+    fpr = false_pos / (n - counts).clamp(min=1)
+
+    per_class_j = sensitivity - fpr
+    return per_class_j, per_class_j.mean().item()
+
+
 def compute_metrics(y_true, y_pred, num_classes, per_class=False):
     """
     Compute metrics for multiclass classification.
@@ -68,14 +102,23 @@ def compute_clip_class_metrics(
 
     Returns:
         dict with scalar metrics, per-class vectors, and per-sample vectors:
-        - r_at_1, r_at_5, r_at_10, median_rank: scalar retrieval metrics
+        - r_at_1, r_at_5, r_at_10, median_rank, avg_rank: scalar retrieval metrics
+        - class_oriented_r_at_1/5/10: scalar, each class weighted equally
+          regardless of size (mean of per-class R@k, not per-sample R@k)
         - per_class_rank:   (K,) mean rank per class (label_encoder order)
         - per_class_cosine: (K,) mean cosine similarity per class
         - mrr:              scalar Mean Reciprocal Rank
         - youdens_j:        scalar Youden's J for top-1 predictions
+        - youdens_j_at_5:    scalar Youden's J@5 (a "hit" counts anywhere in the top-5)
+        - per_class_j_at_1/5: (K,) per-class Youden's J@1 / @5
         - mean_log_odds:    scalar mean log-odds ratio (0 = perfect)
         - ranks:            (N,) 1-based rank of correct class per sample
         - top1_preds:       (N,) predicted class index per sample
+        - top10_preds:      (N, min(10, K)) top predicted class indices, best first
+        - labels:           (N,) ground-truth class indices (passed through)
+        - logits:           (N, K) raw similarity scores (already computed here,
+          returned for callers that need to persist rankings/scores; not itself
+          serialized unless the caller opts in)
     """
     k = class_text_embeds.shape[0]
 
@@ -85,6 +128,7 @@ def compute_clip_class_metrics(
     gt_scores = logits[torch.arange(logits.shape[0]), labels]  # (N,)
     ranks = (logits >= gt_scores.unsqueeze(1)).sum(dim=1)      # 1-based rank
     top1_preds = logits.argmax(dim=1)                          # (N,)
+    top10_preds = logits.topk(min(10, k), dim=1).indices        # (N, min(10, K))
 
     # Scalar metrics
     mrr = (1.0 / ranks.float()).mean().item()
@@ -102,16 +146,36 @@ def compute_clip_class_metrics(
     per_class_rank = torch.zeros(k).scatter_add_(0, labels, ranks.float()) / counts
     per_class_cosine = torch.zeros(k).scatter_add_(0, labels, gt_scores) / counts
 
+    # Class-oriented R@k: per-class R@k first, then mean over classes, so a
+    # rare class counts as much as a frequent one (unlike r_at_k above, which
+    # is dominated by whichever classes have the most samples).
+    class_oriented = {}
+    for k_at in (1, 5, 10):
+        hits = (ranks <= k_at).float()
+        per_class_hits = torch.zeros(k).scatter_add_(0, labels, hits) / counts
+        class_oriented[f"class_oriented_r_at_{k_at}"] = per_class_hits.mean().item()
+
+    per_class_j_at_1, _ = youdens_j_at_k(top10_preds, labels, 1, k)
+    per_class_j_at_5, j_at_5_mean = youdens_j_at_k(top10_preds, labels, 5, k)
+
     return {
         "r_at_1": (ranks == 1).float().mean().item(),
         "r_at_5": (ranks <= 5).float().mean().item(),
         "r_at_10": (ranks <= 10).float().mean().item(),
         "median_rank": ranks.float().median().item(),
+        "avg_rank": ranks.float().mean().item(),
+        **class_oriented,
         "mrr": mrr,
         "youdens_j": j,
+        "youdens_j_at_5": j_at_5_mean,
+        "per_class_j_at_1": per_class_j_at_1,
+        "per_class_j_at_5": per_class_j_at_5,
         "mean_log_odds": mean_log_odds,
         "per_class_rank": per_class_rank,
         "per_class_cosine": per_class_cosine,
         "ranks": ranks,
         "top1_preds": top1_preds,
+        "top10_preds": top10_preds,
+        "labels": labels,
+        "logits": logits,
     }
