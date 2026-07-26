@@ -141,11 +141,15 @@ class ColorCLIPTrainer(BaseTrainer):
             self.save_model()
 
         print("\nFinal evaluation:")
-        final_metrics = self.evaluate(max_samples=len(self.test_loader.dataset))
+        # Raw scores are only needed when we are asked to persist them.
+        needs_logits = bool(self.config["training"].get("save_ranking")
+                            or self.config["training"].get("save_scores"))
+        final_metrics = self.evaluate(max_samples=len(self.test_loader.dataset),
+                                      return_logits=needs_logits)
         self._print_metrics(final_metrics)
         self._save_eval_dump(final_metrics)
 
-    def evaluate(self, data_loader=None, max_samples=None) -> dict:
+    def evaluate(self, data_loader=None, max_samples=None, return_logits=False) -> dict:
         """
         Class-level evaluation: each test color embedding is ranked
         against K unique class text prototypes.
@@ -174,7 +178,8 @@ class ColorCLIPTrainer(BaseTrainer):
         color_embeds = torch.cat(all_color)[:max_samples]
         labels = torch.cat(all_labels)[:max_samples]
 
-        return compute_clip_class_metrics(color_embeds, class_text_embeds, labels)
+        return compute_clip_class_metrics(color_embeds, class_text_embeds, labels,
+                                          return_logits=return_logits)
 
     def save_model(self):
         """Save model weights and config."""
@@ -208,11 +213,13 @@ class ColorCLIPTrainer(BaseTrainer):
         (final eval, full test set):
             14c (N=294,910, K=14):  base 1.2 MB | +ranking 2.6 MB  | +scores 10.1 MB
             96c (N=480,719, K=96):  base 3.4 MB | +ranking 40.8 MB | +scores 117.4 MB
-        Beware large K: ranking/scores grow roughly linearly with it (797c and
-        5363c would run several hundred MB to a few GB per key). Leave both
-        flags off for those runs; `ranks` alone still gives every R@k.
+        Beware large K: ranking/scores need the full (N, K) score matrix in
+        memory and grow roughly linearly with K (797c and 5363c would run
+        several hundred MB to a few GB per key, and the ranking's argsort costs
+        twice that again). Leave both flags off for those runs; `ranks` alone
+        still gives every R@k, and the base keys never need that matrix.
         """
-        k = metrics["logits"].shape[1]
+        k = len(self.label_encoder.classes_)
         idx_dtype = np.int8 if k < 128 else np.int16
 
         dump = {

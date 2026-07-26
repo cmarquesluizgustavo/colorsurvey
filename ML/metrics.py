@@ -88,6 +88,8 @@ def compute_clip_class_metrics(
     color_embeds: torch.Tensor,
     class_text_embeds: torch.Tensor,
     labels: torch.Tensor,
+    return_logits: bool = False,
+    chunk_size: int = 50_000,
 ) -> dict:
     """
     Compute ColorCLIP retrieval metrics via class-level evaluation.
@@ -99,6 +101,12 @@ def compute_clip_class_metrics(
         color_embeds:      (N, D) L2-normalized color embeddings (test samples)
         class_text_embeds: (K, D) L2-normalized text embeddings (one per class)
         labels:            (N,)   ground-truth class indices in [0, K)
+        return_logits:     also return the full (N, K) score matrix. Off by
+            default because that matrix is the one thing here that does not
+            fit at large K (~13 GB at N=600k, K=5363); only callers persisting
+            raw scores/rankings need it.
+        chunk_size:        rows per similarity chunk (memory/speed knob only;
+            results are identical for any value)
 
     Returns:
         dict with scalar metrics, per-class vectors, and per-sample vectors:
@@ -116,29 +124,45 @@ def compute_clip_class_metrics(
         - top1_preds:       (N,) predicted class index per sample
         - top10_preds:      (N, min(10, K)) top predicted class indices, best first
         - labels:           (N,) ground-truth class indices (passed through)
-        - logits:           (N, K) raw similarity scores (already computed here,
-          returned for callers that need to persist rankings/scores; not itself
-          serialized unless the caller opts in)
+        - logits:           (N, K) raw similarity scores — only when
+          return_logits=True
     """
     k = class_text_embeds.shape[0]
+    n = color_embeds.shape[0]
 
-    # (N, K) similarity: row i = scores for test sample i against all classes
-    logits = color_embeds @ class_text_embeds.t()
+    # Every metric below is an aggregate of small per-sample vectors, so the
+    # (N, K) similarity matrix is built one row-chunk at a time and discarded.
+    # Materializing it in full is what breaks at large K (~13 GB at K=5363).
+    gt_chunks, rank_chunks, top1_chunks, topk_chunks, odds_chunks = [], [], [], [], []
+    logit_chunks = []
+    for i in range(0, n, chunk_size):
+        chunk_logits = color_embeds[i:i + chunk_size] @ class_text_embeds.t()
+        chunk_labels = labels[i:i + chunk_size]
+        rows = torch.arange(chunk_logits.shape[0])
 
-    gt_scores = logits[torch.arange(logits.shape[0]), labels]  # (N,)
-    ranks = (logits >= gt_scores.unsqueeze(1)).sum(dim=1)      # 1-based rank
-    top1_preds = logits.argmax(dim=1)                          # (N,)
-    top10_preds = logits.topk(min(10, k), dim=1).indices        # (N, min(10, K))
+        gt = chunk_logits[rows, chunk_labels]
+        pred = chunk_logits.argmax(dim=1)
+        gt_chunks.append(gt)
+        rank_chunks.append((chunk_logits >= gt.unsqueeze(1)).sum(dim=1))  # 1-based rank
+        top1_chunks.append(pred)
+        topk_chunks.append(chunk_logits.topk(min(10, k), dim=1).indices)
+        # Log-odds log(p_pred / p_correct) reduces to the raw logit difference:
+        # the softmax denominator is shared by both terms and cancels. Avoids a
+        # second (N, K) allocation and is numerically exact (no underflow clamp).
+        odds_chunks.append(chunk_logits[rows, pred] - gt)
+
+        if return_logits:
+            logit_chunks.append(chunk_logits)
+
+    gt_scores = torch.cat(gt_chunks)                # (N,)
+    ranks = torch.cat(rank_chunks)                  # (N,)
+    top1_preds = torch.cat(top1_chunks)             # (N,)
+    top10_preds = torch.cat(topk_chunks)            # (N, min(10, K))
+    mean_log_odds = torch.cat(odds_chunks).mean().item()
 
     # Scalar metrics
     mrr = (1.0 / ranks.float()).mean().item()
     j = youdens_j(labels.numpy(), top1_preds.numpy(), k)
-
-    # Log-odds: softmax → log(p_pred / p_correct), 0 when correct
-    probs = torch.softmax(logits, dim=1)
-    p_correct = probs[torch.arange(probs.shape[0]), labels]
-    p_pred = probs[torch.arange(probs.shape[0]), top1_preds]
-    mean_log_odds = torch.log(p_pred / p_correct.clamp(min=1e-10)).mean().item()
 
     # Per-class aggregation: mean rank and mean cosine similarity
     counts = torch.zeros(k).scatter_add_(0, labels, torch.ones_like(labels, dtype=torch.float))
@@ -158,7 +182,7 @@ def compute_clip_class_metrics(
     per_class_j_at_1, _ = youdens_j_at_k(top10_preds, labels, 1, k)
     per_class_j_at_5, j_at_5_mean = youdens_j_at_k(top10_preds, labels, 5, k)
 
-    return {
+    result = {
         "r_at_1": (ranks == 1).float().mean().item(),
         "r_at_5": (ranks <= 5).float().mean().item(),
         "r_at_10": (ranks <= 10).float().mean().item(),
@@ -177,5 +201,7 @@ def compute_clip_class_metrics(
         "top1_preds": top1_preds,
         "top10_preds": top10_preds,
         "labels": labels,
-        "logits": logits,
     }
+    if return_logits:
+        result["logits"] = torch.cat(logit_chunks)
+    return result
