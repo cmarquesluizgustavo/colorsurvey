@@ -1,5 +1,6 @@
 import os
 import time
+import numpy as np
 import torch
 import torch.optim as optim
 
@@ -139,15 +140,19 @@ class ColorCLIPTrainer(BaseTrainer):
             self.save_model()
 
         print("\nFinal evaluation:")
-        self._print_metrics(self.evaluate())
+        final_metrics = self.evaluate(max_samples=len(self.test_loader.dataset))
+        self._print_metrics(final_metrics)
+        self._save_eval_dump(final_metrics)
 
-    def evaluate(self, data_loader=None) -> dict:
+    def evaluate(self, data_loader=None, max_samples=None) -> dict:
         """
         Class-level evaluation: each test color embedding is ranked
         against K unique class text prototypes.
         """
         if data_loader is None:
             data_loader = self.test_loader
+        if max_samples is None:
+            max_samples = self.max_eval_samples
 
         class_text_embeds = self._compute_class_prototypes()
 
@@ -162,12 +167,11 @@ class ColorCLIPTrainer(BaseTrainer):
                 all_color.append(c_emb.cpu())
                 all_labels.append(labels)
                 collected += colors.shape[0]
-                if collected >= self.max_eval_samples:
+                if collected >= max_samples:
                     break
 
-        n = self.max_eval_samples
-        color_embeds = torch.cat(all_color)[:n]
-        labels = torch.cat(all_labels)[:n]
+        color_embeds = torch.cat(all_color)[:max_samples]
+        labels = torch.cat(all_labels)[:max_samples]
 
         return compute_clip_class_metrics(color_embeds, class_text_embeds, labels)
 
@@ -191,6 +195,38 @@ class ColorCLIPTrainer(BaseTrainer):
         k = len(self.label_encoder.classes_)
         counts = torch.bincount(y_train, minlength=k).float().clamp(min=1)
         return counts.sum() / (k * counts)
+
+    def _save_eval_dump(self, metrics: dict):
+        """
+        Save per-sample evaluation results to eval_dump.npz, so any R@k,
+        Youden@k, or a prior-correction sweep can be recomputed offline
+        without re-running the model.
+
+        Size = N samples x K classes, compressed (small integer arrays compress
+        well; the near-random float scores barely do). Measured on our configs
+        (final eval, full test set):
+            14c (N=294,910, K=14):  base 1.2 MB | +ranking 2.6 MB  | +scores 10.1 MB
+            96c (N=480,719, K=96):  base 3.4 MB | +ranking 40.8 MB | +scores 117.4 MB
+        Beware large K: ranking/scores grow roughly linearly with it (797c and
+        5363c would run several hundred MB to a few GB per key). Leave both
+        flags off for those runs; `ranks` alone still gives every R@k.
+        """
+        k = metrics["logits"].shape[1]
+        idx_dtype = np.int8 if k < 128 else np.int16
+
+        dump = {
+            "ranks": metrics["ranks"].numpy().astype(np.int16),
+            "labels": metrics["labels"].numpy().astype(np.int16),
+            "top10": metrics["top10_preds"].numpy().astype(idx_dtype),
+            "j_at_1": metrics["per_class_j_at_1"].numpy().astype(np.float32),
+            "j_at_5": metrics["per_class_j_at_5"].numpy().astype(np.float32),
+        }
+        if self.config["training"].get("save_ranking"):
+            dump["ranking"] = metrics["logits"].argsort(dim=1, descending=True).numpy().astype(idx_dtype)
+        if self.config["training"].get("save_scores"):
+            dump["scores"] = metrics["logits"].numpy().astype(np.float16)
+
+        np.savez_compressed(os.path.join(self.logger.log_dir, "eval_dump.npz"), **dump)
 
     def _compute_class_prototypes(self) -> torch.Tensor:
         """Encode all K unique class names into text embeddings (K, D)."""
