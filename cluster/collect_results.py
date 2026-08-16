@@ -33,17 +33,20 @@ import tarfile
 # ── Column profiles ──────────────────────────────────────────────────
 
 CLIP_FIELDNAMES = [
-    'Experiment', 'Colors', 'Loss_Type', 'Embed_Dim',
-    'Total_Loss', 'R_at_1', 'R_at_5', 'R_at_10', 'Median_Rank',
-    'MRR', 'Mean_Log_Odds', 'CLIP_Youden_J',
+    'Experiment', 'Colors', 'Subset', 'Loss_Type', 'Embed_Dim',
+    'Total_Loss', 'Loss_C2T', 'Loss_T2C', 'Loss_T2C_Above_Floor',
+    'R_at_1', 'R_at_5', 'R_at_10', 'Median_Rank', 'Avg_Rank',
+    'Class_Oriented_R_at_1', 'Class_Oriented_R_at_5', 'Class_Oriented_R_at_10',
+    'MRR', 'Mean_Log_Odds', 'CLIP_Youden_J', 'Youden_J_at_5',
     'Temperature', 'Final_Cycle', 'Timestamp', 'Status',
 ]
 
 # Columns that sort ascending (grouping); everything else sorts descending (metrics)
-ASCENDING_COLUMNS = {'Experiment', 'Colors', 'Loss_Type', 'Embed_Dim',
+ASCENDING_COLUMNS = {'Experiment', 'Colors', 'Subset', 'Loss_Type', 'Embed_Dim',
                      'Final_Cycle', 'Timestamp', 'Status'}
 
-LOSS_TYPE_MAP = {'mask': 'masked', 'orig': 'original', 'supc': 'supcon'}
+LOSS_TYPE_MAP = {'mask': 'masked', 'orig': 'original', 'supc': 'supcon',
+                 'proto': 'prototype'}
 
 
 def parse_experiment_name(config_file):
@@ -95,13 +98,13 @@ def parse_job_log(out_file):
                 metrics['min_recall'] = float(recall_match.group(2))
                 metrics['max_recall'] = float(recall_match.group(3))
             
-            # Check for completion
-            if 'Training complete!' in content:
+            # Check if completed successfully
+            if 'Training complete!' in content or 'Results saved to' in content:
                 metrics['status'] = 'completed'
     
-    except FileNotFoundError:
-        pass
-    
+    except Exception as e:
+        print(f"Error parsing {out_file}: {e}")
+        
     return metrics
 
 
@@ -113,12 +116,13 @@ def detect_experiment_type(last_row):
 
 
 def parse_experiment_details(exp_name):
-    """Extract model details from experiment name.
+    """Extract model parameters from experiment name.
     
     Handles formats:
       - Classic: ml_mlp_129colors_balanced_fixed_ctriplet_m0.5_dim16
       - CLIP v5: clip_oklch_129c_dim128_t0.03_lr0.0003_wd0.0
       - CLIP v6: clip_15c_dim4_ch4_th32
+      - CLIP ablated: clip_96c_no3_proto_dim64_ch16_th256
     """
     # CLIP format
     if exp_name.startswith('clip_'):
@@ -127,9 +131,14 @@ def parse_experiment_details(exp_name):
         colors = None
         embed_dim = None
         color_space = None
+        subset = 'all'
         for part in parts:
             if part.endswith('c') and part[:-1].isdigit():
                 colors = part[:-1]
+            elif part.startswith('no') and part[2:].isdigit():
+                subset = part
+            elif part.startswith('skip') and part[4:].isdigit():
+                subset = part
             elif part.startswith('dim') and part[3:].isdigit():
                 embed_dim = part[3:]
             elif part in ('rgb', 'oklch'):
@@ -138,7 +147,7 @@ def parse_experiment_details(exp_name):
         if color_space is None:
             color_space = 'rgb'
         sampling = 'none'
-        return model, colors, sampling, {'color_space': color_space, 'embed_dim': embed_dim}
+        return model, colors, sampling, {'color_space': color_space, 'embed_dim': embed_dim, 'subset': subset}
 
     # Classic format
     parts = exp_name.split('_')
@@ -160,14 +169,26 @@ def parse_experiment_details(exp_name):
 def _parse_clip_loss_type(exp_name):
     """Extract loss type from CLIP experiment name.
 
-    Names look like: clip_96c_mask_dim64_ch16_th128
-    The loss token is the part after '<N>c_'.
+    Searches for known loss keys (proto, mask, orig, supc) or full loss names.
     """
     parts = exp_name.split('_')
-    for i, part in enumerate(parts):
-        if part.endswith('c') and part[:-1].isdigit() and i + 1 < len(parts):
-            return LOSS_TYPE_MAP.get(parts[i + 1], parts[i + 1])
+    for part in parts:
+        if part in LOSS_TYPE_MAP:
+            return LOSS_TYPE_MAP[part]
+        if part in LOSS_TYPE_MAP.values():
+            return part
     return ''
+
+
+def _optional_float(last_row, key):
+    """Float value, or '' when the column is absent/empty.
+
+    Keeps genuinely-missing metrics blank instead of reporting them as 0.0:
+    the loss components only exist for the prototype loss, and the newer
+    metrics are absent from runs predating them.
+    """
+    raw = last_row.get(key, '')
+    return float(raw) if raw not in ('', None) else ''
 
 
 def _build_clip_entry(exp_dir, last_row):
@@ -176,16 +197,25 @@ def _build_clip_entry(exp_dir, last_row):
     return {
         'Experiment':     exp_dir,
         'Colors':         int(colors) if colors else 0,
+        'Subset':         extra.get('subset', 'all'),
         'Loss_Type':      _parse_clip_loss_type(exp_dir),
         'Embed_Dim':      int(extra.get('embed_dim', 0) or 0),
         'Total_Loss':     float(last_row.get('total_loss', 0) or 0),
+        'Loss_C2T':               _optional_float(last_row, 'loss_c2t'),
+        'Loss_T2C':               _optional_float(last_row, 'loss_t2c'),
+        'Loss_T2C_Above_Floor':   _optional_float(last_row, 'loss_t2c_above_floor'),
         'R_at_1':         float(last_row.get('r_at_1', 0) or 0),
         'R_at_5':         float(last_row.get('r_at_5', 0) or 0),
         'R_at_10':        float(last_row.get('r_at_10', 0) or 0),
         'Median_Rank':    float(last_row.get('median_rank', 0) or 0),
+        'Avg_Rank':               _optional_float(last_row, 'avg_rank'),
+        'Class_Oriented_R_at_1':  _optional_float(last_row, 'class_oriented_r_at_1'),
+        'Class_Oriented_R_at_5':  _optional_float(last_row, 'class_oriented_r_at_5'),
+        'Class_Oriented_R_at_10': _optional_float(last_row, 'class_oriented_r_at_10'),
         'MRR':            float(last_row.get('mrr', 0) or 0),
         'Mean_Log_Odds':  float(last_row.get('mean_log_odds', 0) or 0),
         'CLIP_Youden_J':  float(last_row.get('youdens_j', 0) or 0),
+        'Youden_J_at_5':          _optional_float(last_row, 'youdens_j_at_5'),
         'Temperature':    float(last_row.get('temperature', 0) or 0),
         'Final_Cycle':    last_row.get('cycle', ''),
         'Timestamp':      last_row.get('timestamp', ''),

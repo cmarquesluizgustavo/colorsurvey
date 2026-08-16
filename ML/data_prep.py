@@ -189,7 +189,7 @@ def balance_classes(X, y, strategy="undersample", sampling_ratio=1.0,
     return X_balanced, y_balanced
 
 
-def load_and_preprocess_data(csv_path, top_n=100, test_size=0.2, 
+def load_and_preprocess_data(csv_path, top_n=100, exclude_top_n=0, test_size=0.2, 
                              balance_strategy="none", balance_ratio=1.0, 
                              fixed_samples_per_class=None, random_state=42):
     """
@@ -198,7 +198,8 @@ def load_and_preprocess_data(csv_path, top_n=100, test_size=0.2,
     
     Args:
         csv_path: Path to the CSV file with color data
-        top_n: Keep only the top N most common colors
+        top_n: Upper rank cutoff for colors to keep
+        exclude_top_n: Number of most common colors to exclude (e.g. 3, 14, 96)
         test_size: Proportion of data to use for testing (0.0 to 1.0)
         balance_strategy: Class balancing strategy (see balance_classes for options)
         balance_ratio: Target balancing ratio (0.0 to 1.0, where 1.0 is perfect balance)
@@ -215,10 +216,14 @@ def load_and_preprocess_data(csv_path, top_n=100, test_size=0.2,
         print(f"Error: File {csv_path} not found.")
         return None, None, None, None, None
 
-    # Filter out rare colors
+    # Filter colors (supports slicing rank range from exclude_top_n to top_n)
     print("Filtering data...")
     color_counts = df["colorname"].value_counts()
-    common_colors = color_counts.nlargest(top_n).index
+    if exclude_top_n > 0:
+        common_colors = color_counts.iloc[exclude_top_n:top_n].index
+        print(f"Excluding top {exclude_top_n} colors (ranks {exclude_top_n + 1} to {top_n}).")
+    else:
+        common_colors = color_counts.nlargest(top_n).index
     df_filtered = df[df["colorname"].isin(common_colors)].copy()
 
     print(f"Original samples: {len(df):,}, Filtered samples: {len(df_filtered):,}")
@@ -274,6 +279,7 @@ class DataLoader:
         X_train, X_test, y_train, y_test, le = load_and_preprocess_data(
             self.data_config["csv_path"],
             top_n=self.data_config["top_n_colors"],
+            exclude_top_n=self.data_config.get("exclude_top_n", 0),
             test_size=self.data_config["test_size"],
             balance_strategy=self.data_config.get("balance_strategy", "none"),
             balance_ratio=self.data_config.get("balance_ratio", 1.0),
