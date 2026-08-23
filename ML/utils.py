@@ -87,7 +87,7 @@ class ExperimentLogger:
             "timestamp", "global_step", "cycle", "step_type",
             "epoch_in_step", "step_time",
             "ce_loss", "triplet_loss", "total_loss",
-            "loss_c2t", "loss_t2c", "loss_t2c_above_floor",
+            "loss_c2t", "loss_t2c", "loss_t2c_above_uniform",
             "accuracy", "youdens_j", "train_accuracy", "train_youdens_j",
             # ColorCLIP retrieval metrics
             "r_at_1", "r_at_5", "r_at_10", "median_rank",
@@ -170,13 +170,13 @@ def _plot_color_clip(df, save_dir):
     fig.suptitle('ColorCLIP Training Progress', fontsize=16, fontweight='bold')
     x = df['epoch_in_step']
 
-    # Plot 1: Loss (total, plus components when logged — see loss_c2t/loss_t2c_above_floor)
+    # Plot 1: Loss (total, plus components when logged — see loss_c2t/loss_t2c_above_uniform)
     ax = axes[0, 0]
     ax.plot(x, df['total_loss'], marker='o', label='Total', linewidth=2, markersize=5, color='navy')
     if 'loss_c2t' in df.columns and df['loss_c2t'].notna().any():
         ax.plot(x, df['loss_c2t'], marker='s', label='c->t', linewidth=2, markersize=5, color='steelblue')
-    if 'loss_t2c_above_floor' in df.columns and df['loss_t2c_above_floor'].notna().any():
-        ax.plot(x, df['loss_t2c_above_floor'], marker='^', label='t->c (above floor)',
+    if 'loss_t2c_above_uniform' in df.columns and df['loss_t2c_above_uniform'].notna().any():
+        ax.plot(x, df['loss_t2c_above_uniform'], marker='^', label='t->c (above uniform)',
                 linewidth=2, markersize=5, color='coral')
     ax.set_xlabel('Epoch', fontsize=11)
     ax.set_ylabel('Loss', fontsize=11)

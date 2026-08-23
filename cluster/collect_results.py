@@ -34,7 +34,7 @@ import tarfile
 
 CLIP_FIELDNAMES = [
     'Experiment', 'Colors', 'Subset', 'Loss_Type', 'Embed_Dim',
-    'Total_Loss', 'Loss_C2T', 'Loss_T2C', 'Loss_T2C_Above_Floor',
+    'Total_Loss', 'Loss_C2T', 'Loss_T2C', 'Loss_T2C_Above_Uniform',
     'R_at_1', 'R_at_5', 'R_at_10', 'Median_Rank', 'Avg_Rank',
     'Class_Oriented_R_at_1', 'Class_Oriented_R_at_5', 'Class_Oriented_R_at_10',
     'MRR', 'Mean_Log_Odds', 'CLIP_Youden_J', 'Youden_J_at_5',
@@ -180,15 +180,22 @@ def _parse_clip_loss_type(exp_name):
     return ''
 
 
-def _optional_float(last_row, key):
-    """Float value, or '' when the column is absent/empty.
+def _optional_float(last_row, *keys):
+    """Float value from the first key that is present and non-empty, else ''.
 
     Keeps genuinely-missing metrics blank instead of reporting them as 0.0:
     the loss components only exist for the prototype loss, and the newer
     metrics are absent from runs predating them.
+
+    Several keys allow reading a column that has been renamed: runs from before
+    the 2026-08-17 `loss_t2c_above_floor` -> `loss_t2c_above_uniform` rename
+    (the 12th round among them) still carry the old name.
     """
-    raw = last_row.get(key, '')
-    return float(raw) if raw not in ('', None) else ''
+    for key in keys:
+        raw = last_row.get(key, '')
+        if raw not in ('', None):
+            return float(raw)
+    return ''
 
 
 def _build_clip_entry(exp_dir, last_row):
@@ -203,7 +210,8 @@ def _build_clip_entry(exp_dir, last_row):
         'Total_Loss':     float(last_row.get('total_loss', 0) or 0),
         'Loss_C2T':               _optional_float(last_row, 'loss_c2t'),
         'Loss_T2C':               _optional_float(last_row, 'loss_t2c'),
-        'Loss_T2C_Above_Floor':   _optional_float(last_row, 'loss_t2c_above_floor'),
+        'Loss_T2C_Above_Uniform': _optional_float(last_row, 'loss_t2c_above_uniform',
+                                                   'loss_t2c_above_floor'),
         'R_at_1':         float(last_row.get('r_at_1', 0) or 0),
         'R_at_5':         float(last_row.get('r_at_5', 0) or 0),
         'R_at_10':        float(last_row.get('r_at_10', 0) or 0),
