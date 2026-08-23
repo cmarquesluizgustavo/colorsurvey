@@ -178,14 +178,16 @@ class PrototypeCLIPLoss(BaseCLIPLoss):
         soft_targets = pos.float() / positives_per_class
         loss_t2c = F.cross_entropy(logits_t2c, soft_targets)
 
-        # t->c has many right answers per row (all of a class's samples in the
-        # batch), so even a perfect model can't beat this floor: it's the cost
-        # of spreading a bet over `positives_per_class` targets instead of one.
-        floor = positives_per_class.float().log().mean()
+        # Distance from the uniform-over-positives bound. NOT headroom: that bound
+        # assumes the prototype could single out exactly its own labelled rows, which
+        # is impossible -- a row is a colour, and the unlabelled near-identical shades
+        # look the same to it. The real floor is q(n|k) proportional to p(k | rgb_n),
+        # measured at ~5.2 nats vs this bound's 2.3 (see research_plan.md note 5).
+        uniform_bound = positives_per_class.float().log().mean()
         self.last_components = {
             "loss_c2t": loss_c2t.item(),
             "loss_t2c": loss_t2c.item(),
-            "loss_t2c_above_floor": (loss_t2c - floor).item(),
+            "loss_t2c_above_uniform": (loss_t2c - uniform_bound).item(),
         }
 
         return (loss_c2t + self.t2c_weight * loss_t2c) / (1.0 + self.t2c_weight)
