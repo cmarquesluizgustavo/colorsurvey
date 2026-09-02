@@ -21,6 +21,7 @@ Run on the cluster: python3 collect_results.py 4th_experiments
 Then fetch the tarball it writes with cluster/fetch.sh.
 """
 
+import math
 import os
 import sys
 import re
@@ -199,15 +200,22 @@ def _optional_float(last_row, *keys):
 
 
 def _build_clip_entry(exp_dir, last_row):
-    """Build a dict with only CLIP-profile keys from a metrics row."""
+    """Build a dict with only CLIP-profile keys from a metrics row.
+
+    A run whose final loss is not finite diverged: its retrieval metrics are
+    computed from NaN scores and come back impossible (R@1 0.0 next to R@5 1.0,
+    MRR inf, median rank 0). It is reported as Status 'diverged' so those numbers
+    are not read as results; the values are kept so the failure stays diagnosable.
+    """
     _, colors, _, extra = parse_experiment_details(exp_dir)
+    total_loss = float(last_row.get('total_loss', 0) or 0)
     return {
         'Experiment':     exp_dir,
         'Colors':         int(colors) if colors else 0,
         'Subset':         extra.get('subset', 'all'),
         'Loss_Type':      _parse_clip_loss_type(exp_dir),
         'Embed_Dim':      int(extra.get('embed_dim', 0) or 0),
-        'Total_Loss':     float(last_row.get('total_loss', 0) or 0),
+        'Total_Loss':     total_loss,
         'Loss_C2T':               _optional_float(last_row, 'loss_c2t'),
         'Loss_T2C':               _optional_float(last_row, 'loss_t2c'),
         'Loss_T2C_Above_Uniform': _optional_float(last_row, 'loss_t2c_above_uniform',
@@ -227,7 +235,7 @@ def _build_clip_entry(exp_dir, last_row):
         'Temperature':    float(last_row.get('temperature', 0) or 0),
         'Final_Cycle':    last_row.get('cycle', ''),
         'Timestamp':      last_row.get('timestamp', ''),
-        'Status':         'completed',
+        'Status':         'completed' if math.isfinite(total_loss) else 'diverged',
     }
 
 
