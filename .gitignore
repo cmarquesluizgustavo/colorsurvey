@@ -37,6 +37,8 @@ data/*
 # Environment variables
 .env
 .env.local
+# Cluster host/user/node details (see .cluster.env.example)
+.cluster.env
 
 # Logs
 *.log

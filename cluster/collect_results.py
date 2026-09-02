@@ -17,8 +17,8 @@ Example:
     python3 collect_results.py 3rd_experiments
     python3 collect_results.py 8th_experiments --local --type clip --sort Colors,Loss_Type,Embed_Dim
 
-Run on cluster: python3 collect_results.py 4th_experiments
-Then download: scp my_cluster:colorsurvey/4th_experiments_results.tar.gz .
+Run on the cluster: python3 collect_results.py 4th_experiments
+Then fetch the tarball it writes with cluster/fetch.sh.
 """
 
 import os
@@ -324,7 +324,7 @@ def main():
     experiment_name = positional[0] if positional else '3rd_experiments'
 
     if not local_mode:
-        os.chdir(os.path.expanduser('~/colorsurvey'))
+        os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
     print("Collecting completed experiment results...")
     print(f"Experiment: {experiment_name}")
@@ -422,7 +422,7 @@ def main():
         with tarfile.open(tarball_name, 'w:gz') as tar:
             tar.add(results_dir, arcname=results_dir)
         print(f"Created {tarball_name}")
-        print(f"\nTo download: scp zeus:~/colorsurvey/{tarball_name} .")
+        print(f"\nWrote {tarball_name}")
         shutil.rmtree(results_dir)
         print("\nDone!")
         return
@@ -601,7 +601,7 @@ def main():
         tar.add(results_dir, arcname=results_dir)
     
     print(f"Created {tarball_name}")
-    print(f"\nTo download: scp zeus:~/colorsurvey/{tarball_name} .")
+    print(f"\nWrote {tarball_name}")
     
     shutil.rmtree(results_dir)
     print("\nDone!")
