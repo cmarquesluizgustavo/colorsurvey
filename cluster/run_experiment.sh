@@ -19,8 +19,7 @@ mv trainers/*.py ML/trainers/ 2>/dev/null || true
 mv losses/*.py ML/losses/ 2>/dev/null || true
 mv __pycache__ ML/ 2>/dev/null || true
 
-# Rename CSV to match config expectations
-mv mainsurvey_data_with_space.csv mainsurvey_data.csv 2>/dev/null || true
+# CSV is transferred as mainsurvey.csv — no rename needed
 
 # Move config to experiments/ directory
 mkdir -p experiments
