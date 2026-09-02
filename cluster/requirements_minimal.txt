@@ -1,4 +1,0 @@
-# Minimal requirements - assuming torch, numpy, pandas already available on cluster
-scikit-learn
-imbalanced-learn
-tensorboard
