@@ -1,0 +1,46 @@
+####################
+# HTCondor submission file for Color Survey ML experiments
+####################
+
+# Round tag namespacing the log files. $(Process) restarts at 0 on every submission, so
+# without this a new round overwrites the logs of any round still running. Returned
+# results need no equivalent: they arrive as runs/<experiment_name>/run_<timestamp>/,
+# which is already unique per job. submit.sh derives the tag from experiments.txt and
+# passes -a round=<tag>.
+round = misc
+
+# Executable wrapper script
+Executable = cluster/run_experiment.sh
+
+# Arguments: pass the config file path from experiments.txt
+Arguments = $(config)
+
+# Universe type
+Universe = vanilla
+
+# File transfer settings
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+
+# Input files needed on worker nodes
+# Using system Python with pre-installed torch, numpy, pandas
+transfer_input_files = ML/,mainsurvey.csv,$(config)
+
+# Returned as runs/ on the submit node: HTCondor strips the path and delivers the
+# basename. Every job writes a differently-named experiment directory underneath, so
+# they merge rather than collide.
+transfer_output_files = experiments/runs
+
+# Resource requests
+request_cpus = 1
+request_memory = $(mem)
+request_disk = 1 GB
+
+# Log files (one per experiment). submit.sh must mkdir logs/$(round) first — HTCondor
+# will not create it and jobs go on hold if it is missing.
+Log = logs/$(round)/experiment_$(Process).log
+Output = logs/$(round)/experiment_$(Process).out
+Error = logs/$(round)/experiment_$(Process).err
+
+# Queue one job per line in experiments.txt (config_path, memory_MB)
+Queue config, mem from cluster/experiments.txt
