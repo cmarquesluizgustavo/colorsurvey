@@ -2,13 +2,20 @@
 Generate sorted experiments.txt with per-job memory requests.
 
 Sorting: smallest configs first (top_n_colors, embed_dim, hidden complexity).
-Memory:  129c → 1000 MB,  1184c/4214c → 1500 MB.
+
+Usage:
+    python cluster/generate_experiments_txt.py <experiment_dir>
+    e.g. python cluster/generate_experiments_txt.py 7th_experiments
 """
 import glob
 import os
 import re
+import sys
 
-MEMORY_MAP = {129: 1000, 1184: 1500, 4214: 1500}
+# Memory request per color count; anything unlisted gets 2000 MB. The larger counts ask
+# for more than the smallest slot tier holds, so they only match the bigger workers.
+MEMORY_MAP = {14: 1000, 96: 1000, 797: 2000, 5363: 2000}
+DEFAULT_MEMORY = 2000
 
 
 def parse_sort_key(path):
@@ -22,10 +29,16 @@ def parse_sort_key(path):
 
 
 def main():
-    config_dir = os.path.join(os.path.dirname(__file__), '..', '6th_experiments', 'configs')
+    if len(sys.argv) < 2:
+        print("Usage: python cluster/generate_experiments_txt.py <experiment_dir>")
+        print("  e.g. python cluster/generate_experiments_txt.py 7th_experiments")
+        sys.exit(1)
+
+    exp_dir = sys.argv[1]
+    config_dir = os.path.join(os.path.dirname(__file__), '..', exp_dir, 'configs')
 
     # Load completed experiment names to exclude (from metrics/ folder)
-    metrics_dir = os.path.join(os.path.dirname(__file__), '..', '6th_experiments', 'metrics')
+    metrics_dir = os.path.join(os.path.dirname(__file__), '..', exp_dir, 'metrics')
     completed = set()
     if os.path.isdir(metrics_dir):
         for f in os.listdir(metrics_dir):
@@ -42,9 +55,9 @@ def main():
     out_path = os.path.join(os.path.dirname(__file__), 'experiments.txt')
     with open(out_path, 'w') as f:
         for path in configs:
-            rel = '6th_experiments/configs/' + os.path.basename(path)
+            rel = f'{exp_dir}/configs/' + os.path.basename(path)
             colors = int(re.search(r'_(\d+)c_', os.path.basename(path)).group(1))
-            mem = MEMORY_MAP[colors]
+            mem = MEMORY_MAP.get(colors, DEFAULT_MEMORY)
             f.write(f'{rel}, {mem}\n')
 
     print(f"Total configs: {len(all_configs)}, Completed: {len(completed)}, "
