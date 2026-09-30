@@ -1,41 +1,41 @@
-# Ambiente HTCondor
+# HTCondor environment
 
-Referência do ambiente do cluster. O fluxo de trabalho do projeto está em `README.md`.
+Reference for the cluster environment. The project workflow is in `README.md`.
 
-## Comandos úteis
+## Useful commands
 
 ```bash
-condor_q -submitter $USER     # seus jobs na fila
-condor_q -held                # jobs parados por erro
-condor_q -analyze <job_id>    # por que um job não casa com nenhum slot
-condor_status                 # slots e memória livre por nó
-condor_history -limit 10      # jobs já concluídos
-condor_rm <cluster_id>        # cancela uma submissão
-condor_rm $USER               # cancela todos os seus jobs
+condor_q -submitter $USER     # your jobs in the queue
+condor_q -held                # jobs stopped by an error
+condor_q -analyze <job_id>    # why a job matches no slot
+condor_status                 # slots and free memory per node
+condor_history -limit 10      # finished jobs
+condor_rm <cluster_id>        # cancel one submission
+condor_rm $USER               # cancel all your jobs
 ```
 
-## Jobs em *hold*
+## Held jobs
 
-Duas causas comuns:
+Two common causes:
 
-**Falta de memória.** A memória é pedida por job, na segunda coluna de
-`cluster/experiments.txt`. Para mudar, ajuste `MEMORY_MAP` em
-`cluster/generate_experiments_txt.py` e gere a lista de novo. Os nós têm tiers de
-memória por slot diferentes, então um pedido maior reduz os slots elegíveis e o job
-espera mais na fila.
+**Not enough memory.** Memory is requested per job, in the second column of
+`cluster/experiments.txt`. To change it, adjust `MEMORY_MAP` in
+`cluster/generate_experiments_txt.py` and regenerate the list. Nodes have different
+per-slot memory tiers, so a larger request narrows the eligible slots and the job waits
+longer in the queue.
 
-**Falha na transferência de saída.** O HTCondor não cria diretórios intermediários no
-nó de submissão: se o destino de um `transfer_output_remaps` não existir, a
-transferência falha, o job vai para *hold* e a saída é perdida. O log do job mostra
+**Output transfer failure.** HTCondor does not create intermediate directories on the
+submit node: if the destination of a `transfer_output_remaps` does not exist, the
+transfer fails, the job is held and its output is lost. The job log shows
 `SHADOW ... failed to write to file ... (errno 2)`.
 
-## Submeter apenas um subconjunto
+## Submitting a subset
 
-Edite `cluster/experiments.txt` e comente (com `#`) ou remova as linhas que não quer
-executar. Todas as linhas devem pertencer à mesma rodada.
+Edit `cluster/experiments.txt` and comment out (with `#`) or delete the lines you do not
+want to run. All lines must belong to the same round.
 
 ## GPU
 
-Um dos nós tem GPU, mas o driver é antigo e o PyTorch instalado cai para CPU
-(`CUDA initialization: The NVIDIA driver on your system is too old`). Os experimentos
-rodam em CPU; o aviso em `.err` é esperado.
+One node has a GPU, but its driver is old and the installed PyTorch falls back to CPU
+(`CUDA initialization: The NVIDIA driver on your system is too old`). Experiments run on
+CPU; the warning in `.err` is expected.
