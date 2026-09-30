@@ -4,8 +4,8 @@ Generate sorted experiments.txt with per-job memory requests.
 Sorting: smallest configs first (top_n_colors, embed_dim, hidden complexity).
 
 Usage:
-    python cluster/generate_experiments_txt.py <experiment_dir>
-    e.g. python cluster/generate_experiments_txt.py 7th_experiments
+    python cluster/generate_experiments_txt.py <round>
+    e.g. python cluster/generate_experiments_txt.py 14th     (reads experiments/14th/)
 """
 import glob
 import os
@@ -30,12 +30,15 @@ def parse_sort_key(path):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python cluster/generate_experiments_txt.py <experiment_dir>")
-        print("  e.g. python cluster/generate_experiments_txt.py 7th_experiments")
+        print("Usage: python cluster/generate_experiments_txt.py <round>")
+        print("  e.g. python cluster/generate_experiments_txt.py 14th")
         sys.exit(1)
 
-    exp_dir = sys.argv[1]
+    exp_dir = f'experiments/{sys.argv[1]}'
     config_dir = os.path.join(os.path.dirname(__file__), '..', exp_dir, 'configs')
+    if not os.path.isdir(config_dir):
+        print(f"No configs at {exp_dir}/configs; pass the bare round, e.g. 14th")
+        sys.exit(1)
 
     # Load completed experiment names to exclude (from metrics/ folder)
     metrics_dir = os.path.join(os.path.dirname(__file__), '..', exp_dir, 'metrics')

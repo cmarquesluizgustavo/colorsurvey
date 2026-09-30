@@ -14,10 +14,12 @@ Usage:
     python3 collect_results.py [experiment_name] --type clip --sort Colors,Loss_Type,Embed_Dim
     
 Example:
-    python3 collect_results.py 3rd_experiments
-    python3 collect_results.py 8th_experiments --local --type clip --sort Colors,Loss_Type,Embed_Dim
+    python3 collect_results.py 3rd
+    python3 collect_results.py 8th --local --type clip --sort Colors,Loss_Type,Embed_Dim
 
-Run on the cluster: python3 collect_results.py 4th_experiments
+--local reads and writes experiments/<round>/.
+
+Run on the cluster: python3 collect_results.py 4th
 Then fetch the tarball it writes with cluster/fetch.sh.
 """
 
@@ -297,7 +299,7 @@ def _find_local_metrics(experiment_name):
     Used with --local to rebuild experiment_results.csv without needing
     the original runs/ directories.
     """
-    metrics_dir = os.path.join(experiment_name, 'metrics')
+    metrics_dir = os.path.join('experiments', experiment_name, 'metrics')
     result = {}
     if not os.path.isdir(metrics_dir):
         return result
@@ -329,7 +331,7 @@ def main():
             skip_next = True
             continue
         positional.append(a)
-    experiment_name = positional[0] if positional else '3rd_experiments'
+    experiment_name = positional[0] if positional else '3rd'
 
     if not local_mode:
         os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -385,7 +387,7 @@ def main():
 
         # Write CSV
         if local_mode:
-            csv_path = os.path.join(experiment_name, 'experiment_results.csv')
+            csv_path = os.path.join('experiments', experiment_name, 'experiment_results.csv')
         else:
             results_dir = f'{experiment_name}_results'
             os.makedirs(f'{results_dir}/metrics', exist_ok=True)
@@ -518,7 +520,7 @@ def main():
     
     # Output dirs
     if local_mode:
-        csv_path = os.path.join(experiment_name, 'experiment_results.csv')
+        csv_path = os.path.join('experiments', experiment_name, 'experiment_results.csv')
     else:
         results_dir = f'{experiment_name}_results'
         os.makedirs(f'{results_dir}/metrics', exist_ok=True)

@@ -1,8 +1,8 @@
 #!/bin/bash
 # Harvest a round's results from the cluster.
 #
-#   bash cluster/fetch.sh 14th_experiments            replace the local copy
-#   bash cluster/fetch.sh 14th_experiments --merge    add only what is missing
+#   bash cluster/fetch.sh 14th            replace the local copy of experiments/14th/
+#   bash cluster/fetch.sh 14th --merge    add only what is missing
 #
 # Replace mode drops the local metrics/, tensorboards/, models/ and CSV and extracts
 # the tarball fresh. Merge mode keeps existing files, copies in the new ones, then
@@ -15,13 +15,13 @@ set -e
 
 ROUND="${1:-}"
 if [ -z "$ROUND" ]; then
-    echo "usage: bash cluster/fetch.sh <round>_experiments [--merge]" >&2
+    echo "usage: bash cluster/fetch.sh <round> [--merge]" >&2
     exit 1
 fi
 MERGE=0
 [ "${2:-}" = "--merge" ] && MERGE=1
 
-DEST="$REPO_ROOT/$ROUND"
+DEST="$REPO_ROOT/experiments/$ROUND"
 TARBALL="${ROUND}_results.tar.gz"
 mkdir -p "$DEST"
 

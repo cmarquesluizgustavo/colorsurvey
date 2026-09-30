@@ -50,16 +50,13 @@ logs/
 .cache/
 .specstory/
 *csv
-*experiments
-# ...but keep each round's generate_configs.py: its docstring is the record of what the
-# round was for and why. Re-including a path inside an excluded directory needs the
-# directory un-excluded first, hence the three lines rather than one negation.
-!*experiments/
-*experiments/*
-!*experiments/generate_configs.py
+# Experiment rounds and local runs, except each round's generate_configs.py: its docstring
+# is the record of what the round was for and why.
+experiments/*/*
+!experiments/*/generate_configs.py
 analysis/non_colors.txt
 
-# Cluster-specific experiment list (use experiments_default.txt as template)
+# Generated job list for the cluster
 cluster/experiments.txt
 data_mining/blacklists/
 data_mining/fuzzy_matching/
