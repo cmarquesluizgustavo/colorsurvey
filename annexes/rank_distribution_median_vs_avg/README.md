@@ -8,7 +8,7 @@ Why `clip_5363c_proto` has **Median Rank = 2.0** and **Average Rank = 28.0** (~2
 
 ## 1. Exact Rank Distribution (5,363 colours, Prototype)
 
-Tested on all 601,476 full test set samples (`10th_experiments/models/clip_5363c_proto_dim64_ch16_th256/eval_dump.npz`).
+Tested on all 601,476 full test set samples (`experiments/10th/models/clip_5363c_proto_dim64_ch16_th256/eval_dump.npz`).
 
 ### Top 10 Ranks & Median Threshold
 

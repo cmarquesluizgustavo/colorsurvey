@@ -1,6 +1,6 @@
 # Running experiments on the cluster
 
-Jobs are submitted one round at a time. A round is a directory like `14th_experiments/`
+Jobs are submitted one round at a time. A round is a directory like `experiments/14th/`
 holding a `generate_configs.py` and the `configs/*.json` it writes.
 
 ## Setup
@@ -19,7 +19,7 @@ identity from the environment there and need no configuration.
 Both steps run **on the cluster**, from the project root:
 
 ```bash
-python3 cluster/generate_experiments_txt.py 14th_experiments
+python3 cluster/generate_experiments_txt.py 14th
 bash cluster/submit.sh
 ```
 
@@ -44,8 +44,8 @@ Note that `.err` is non-empty for healthy runs too — matplotlib and torch both
 ## Fetch results
 
 ```bash
-bash cluster/fetch.sh 14th_experiments            # replace the local copy
-bash cluster/fetch.sh 14th_experiments --merge    # add only what is missing
+bash cluster/fetch.sh 14th            # replace the local copy
+bash cluster/fetch.sh 14th --merge    # add only what is missing
 ```
 
 Use `--merge` while a round is still producing results: it keeps what you already have,

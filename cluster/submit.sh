@@ -6,15 +6,15 @@ set -e
 # Round tag: namespaces logs/ so a new submission cannot clobber the logs of a round
 # that is still running ($(Process) restarts at 0 every time). Results are not
 # namespaced -- they merge into runs/ under their own experiment names.
-# Derived from experiments.txt (12th_experiments/configs/x.json -> "12th"); override with $1.
+# Derived from experiments.txt (experiments/12th/configs/x.json -> "12th"); override with $1.
 if [ ! -s cluster/experiments.txt ]; then
     echo "ERROR: cluster/experiments.txt is missing or empty." >&2
-    echo "Run: python3 cluster/generate_experiments_txt.py <round>_experiments" >&2
+    echo "Run: python3 cluster/generate_experiments_txt.py <round>" >&2
     exit 1
 fi
 # The tag comes from the first line, so every line must belong to the same round --
 # otherwise one round's jobs would be filed under another's logs/ and runs_*.
-MIXED=$(awk -F/ '{print $1}' cluster/experiments.txt | sort -u)
+MIXED=$(awk -F/ '{print $2}' cluster/experiments.txt | sort -u)
 if [ "$(echo "$MIXED" | wc -l)" -gt 1 ]; then
     echo "ERROR: cluster/experiments.txt mixes rounds:" >&2
     echo "$MIXED" | sed 's/^/         /' >&2
@@ -22,7 +22,7 @@ if [ "$(echo "$MIXED" | wc -l)" -gt 1 ]; then
     exit 1
 fi
 
-ROUND="${1:-$(awk -F/ 'NR==1{print $1}' cluster/experiments.txt | sed 's/_experiments$//')}"
+ROUND="${1:-$(awk -F/ 'NR==1{print $2}' cluster/experiments.txt)}"
 if [ -z "$ROUND" ]; then
     echo "ERROR: could not derive a round tag; pass one explicitly: $0 14th" >&2
     exit 1
@@ -38,11 +38,11 @@ echo "================================================"
 # Override with FORCE=1 for a deliberate re-submit.
 if command -v condor_q >/dev/null 2>&1; then
     QUEUED=$(condor_q -submitter "$USER" -af Args 2>/dev/null \
-             | grep -c "^${ROUND}_experiments/" || true)
+             | grep -c "^experiments/${ROUND}/" || true)
     if [ "${QUEUED:-0}" -gt 0 ] && [ "${FORCE:-0}" != "1" ]; then
         echo "ERROR: round '$ROUND' already has $QUEUED job(s) in the queue." >&2
         echo "       Submitting again would make both write to logs/$ROUND/." >&2
-        echo "       Inspect:  condor_q -submitter $USER -af ClusterId Args | grep ${ROUND}_experiments" >&2
+        echo "       Inspect:  condor_q -submitter $USER -af ClusterId Args | grep experiments/${ROUND}/" >&2
         echo "       Re-submit anyway:  FORCE=1 $0 $ROUND" >&2
         exit 1
     fi

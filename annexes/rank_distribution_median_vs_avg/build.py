@@ -26,16 +26,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 
 DUMP_PATH_5363C_PROTO = os.path.join(
-    ROOT, "10th_experiments/models/clip_5363c_proto_dim64_ch16_th256/eval_dump.npz"
+    ROOT, "experiments/10th/models/clip_5363c_proto_dim64_ch16_th256/eval_dump.npz"
 )
 DUMP_PATH_5363C_MASK = os.path.join(
-    ROOT, "10th_experiments/models/clip_5363c_mask_dim64_ch16_th256/eval_dump.npz"
+    ROOT, "experiments/10th/models/clip_5363c_mask_dim64_ch16_th256/eval_dump.npz"
 )
 DUMP_PATH_797C_PROTO = os.path.join(
-    ROOT, "10th_experiments/models/clip_797c_proto_dim64_ch16_th256/eval_dump.npz"
+    ROOT, "experiments/10th/models/clip_797c_proto_dim64_ch16_th256/eval_dump.npz"
 )
 DUMP_PATH_797C_MASK = os.path.join(
-    ROOT, "10th_experiments/models/clip_797c_mask_dim64_ch16_th256/eval_dump.npz"
+    ROOT, "experiments/10th/models/clip_797c_mask_dim64_ch16_th256/eval_dump.npz"
 )
 DUMP_PATH_96C_PROTO = os.path.join(
     ROOT, "experiments/runs/clip_96c_proto_dim64_ch64_th256/run_20260726-162156/eval_dump.npz"
@@ -263,7 +263,7 @@ Why `clip_5363c_proto` has **Median Rank = 2.0** and **Average Rank = 28.0** (~2
 
 ## 1. Exact Rank Distribution (5,363 colours, Prototype)
 
-Tested on all 601,476 full test set samples (`10th_experiments/models/clip_5363c_proto_dim64_ch16_th256/eval_dump.npz`).
+Tested on all 601,476 full test set samples (`experiments/10th/models/clip_5363c_proto_dim64_ch16_th256/eval_dump.npz`).
 
 ### Top 10 Ranks & Median Threshold
 
