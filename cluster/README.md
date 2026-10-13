@@ -51,8 +51,13 @@ bash cluster/fetch.sh 14th --merge    # add only what is missing
 Use `--merge` while a round is still producing results: it keeps what you already have,
 copies in the rest, and rebuilds `experiment_results.csv` from every local metrics file.
 
-A run that ends with a non-finite loss is recorded as `Status: diverged` — its retrieval
-metrics are computed from NaN scores and are meaningless. Filter on that column.
+Only the round's own runs are collected: a run belongs to a round when its name is one of
+the round's configs and its saved `config.json` matches that config. Names are reused
+across rounds, so the name alone is not enough.
+
+Two statuses mark rows that are not results — filter on that column. `diverged`: the loss
+went non-finite and the retrieval metrics are meaningless. `incomplete`: training stopped
+before the end (no final checkpoint), so the row reflects a partial run.
 
 ## Where things land
 
