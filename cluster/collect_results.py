@@ -17,7 +17,8 @@ Example:
     python3 collect_results.py 3rd
     python3 collect_results.py 8th --local --type clip --sort Colors,Loss_Type,Embed_Dim
 
---local reads and writes experiments/<round>/.
+--local reads and writes experiments/<round>/. On the cluster, --type clip collects only
+the runs that belong to the round (see round_runs).
 
 Run on the cluster: python3 collect_results.py 4th
 Then fetch the tarball it writes with cluster/fetch.sh.
@@ -29,6 +30,7 @@ import sys
 import re
 import csv
 import glob
+import json
 import shutil
 import tarfile
 
@@ -201,16 +203,24 @@ def _optional_float(last_row, *keys):
     return ''
 
 
-def _build_clip_entry(exp_dir, last_row):
+def _build_clip_entry(exp_dir, last_row, models_dir):
     """Build a dict with only CLIP-profile keys from a metrics row.
 
-    A run whose final loss is not finite diverged: its retrieval metrics are
-    computed from NaN scores and come back impossible (R@1 0.0 next to R@5 1.0,
-    MRR inf, median rank 0). It is reported as Status 'diverged' so those numbers
-    are not read as results; the values are kept so the failure stays diagnosable.
+    Status flags rows whose numbers are not results, keeping the values so the failure
+    stays diagnosable:
+      'diverged'   - the final loss is not finite; retrieval metrics computed from NaN
+                     scores come back impossible (R@1 0.0 next to R@5 1.0, MRR inf).
+      'incomplete' - models_dir exists but holds no final checkpoint: training stopped
+                     before it ended, so the last row is a partial epoch count.
     """
     _, colors, _, extra = parse_experiment_details(exp_dir)
     total_loss = float(last_row.get('total_loss', 0) or 0)
+    if not math.isfinite(total_loss):
+        status = 'diverged'
+    elif os.path.isdir(models_dir) and not os.path.exists(os.path.join(models_dir, FINAL_CHECKPOINT)):
+        status = 'incomplete'
+    else:
+        status = 'completed'
     return {
         'Experiment':     exp_dir,
         'Colors':         int(colors) if colors else 0,
@@ -237,7 +247,7 @@ def _build_clip_entry(exp_dir, last_row):
         'Temperature':    float(last_row.get('temperature', 0) or 0),
         'Final_Cycle':    last_row.get('cycle', ''),
         'Timestamp':      last_row.get('timestamp', ''),
-        'Status':         'completed' if math.isfinite(total_loss) else 'diverged',
+        'Status':         status,
     }
 
 
@@ -257,6 +267,54 @@ def _multi_sort_key(entry, sort_cols):
             # descending: negate numeric, or invert string
             keys.append(-val if isinstance(val, (int, float)) else val)
     return tuple(keys)
+
+
+# Written only when training ends normally (early stop or last epoch); a run that
+# crashed has best_color_clip_model.pth at most.
+FINAL_CHECKPOINT = 'color_clip_model.pth'
+
+# Training flags that change what a run writes, not what it trains.
+_OUTPUT_ONLY_KEYS = ('save_scores', 'save_ranking')
+
+
+def _comparable(config):
+    training = {k: v for k, v in config.get('training', {}).items() if k not in _OUTPUT_ONLY_KEYS}
+    return {**config, 'training': training}
+
+
+def round_runs(root, round_name):
+    """Map each experiment of a round to the run directory that produced it.
+
+    A run belongs to the round when its name is one of the round's configs and its saved
+    config.json equals that config, output-only flags aside. Names are reused across
+    rounds with different configs, so the name alone cannot tell rounds apart. When several
+    runs match, the newest wins. Experiments with no matching run are absent.
+
+    Raises FileNotFoundError if the round has no configs/ directory.
+    """
+    config_dir = os.path.join(root, 'experiments', round_name, 'configs')
+    if not os.path.isdir(config_dir):
+        raise FileNotFoundError(f"no configs at experiments/{round_name}/configs")
+    wanted = {}
+    for path in glob.glob(os.path.join(config_dir, '*.json')):
+        with open(path) as f:
+            wanted[os.path.basename(path)[:-5]] = _comparable(json.load(f))
+
+    bases = [os.path.join(root, 'runs'), os.path.join(root, 'experiments', 'runs')]
+    bases += sorted(glob.glob(os.path.join(root, 'experiments', 'runs_*')))
+    found = {}
+    for base in bases:
+        for name, config in wanted.items():
+            for run_dir in glob.glob(os.path.join(base, name, 'run_*')):
+                saved = os.path.join(run_dir, 'config.json')
+                if not os.path.exists(saved):
+                    continue
+                with open(saved) as f:
+                    if _comparable(json.load(f)) != config:
+                        continue
+                if name not in found or os.path.basename(run_dir) > os.path.basename(found[name]):
+                    found[name] = run_dir
+    return found
 
 
 def _find_experiment_dirs():
@@ -351,6 +409,16 @@ def main():
         # Build a fake exp_results dict: {exp_name: metrics_path}
         # We'll handle this below by reading directly from the path
         exp_results = local_metrics
+    elif exp_type_flag == 'clip':
+        try:
+            exp_results = round_runs('.', experiment_name)
+        except FileNotFoundError as e:
+            print(f"ERROR: {e}")
+            sys.exit(1)
+        if not exp_results:
+            print("No experiment results found!")
+            return
+        print(f"Matched {len(exp_results)} runs to the round's configs")
     else:
         exp_results = _find_experiment_dirs()
         if not exp_results:
@@ -370,7 +438,9 @@ def main():
                     rows = list(csv.DictReader(f))
                 if not rows or detect_experiment_type(rows[-1]) != 'clip':
                     continue
-                completed.append(_build_clip_entry(exp_dir, rows[-1]))
+                models_dir = (os.path.join('experiments', experiment_name, 'models', exp_dir)
+                              if local_mode else os.path.join(run_dir, 'models'))
+                completed.append(_build_clip_entry(exp_dir, rows[-1], models_dir))
             except Exception as e:
                 print(f"Error processing {exp_dir}: {e}")
 

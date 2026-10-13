@@ -12,6 +12,8 @@ import os
 import re
 import sys
 
+from collect_results import FINAL_CHECKPOINT, round_runs
+
 # Memory request per color count; anything unlisted gets 2000 MB. The larger counts ask
 # for more than the smallest slot tier holds, so they only match the bigger workers.
 MEMORY_MAP = {14: 1000, 96: 1000, 797: 2000, 5363: 2000}
@@ -40,13 +42,18 @@ def main():
         print(f"No configs at {exp_dir}/configs; pass the bare round, e.g. 14th")
         sys.exit(1)
 
-    # Load completed experiment names to exclude (from metrics/ folder)
+    # Experiments to skip: harvested metrics here, plus runs that finished but are not
+    # harvested yet (on the cluster, that is every finished run).
     metrics_dir = os.path.join(os.path.dirname(__file__), '..', exp_dir, 'metrics')
     completed = set()
     if os.path.isdir(metrics_dir):
         for f in os.listdir(metrics_dir):
             if f.endswith('_metrics.csv'):
                 completed.add(f.replace('_metrics.csv', ''))
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+    for name, run_dir in round_runs(root, sys.argv[1]).items():
+        if os.path.exists(os.path.join(run_dir, 'models', FINAL_CHECKPOINT)):
+            completed.add(name)
 
     all_configs = sorted(glob.glob(os.path.join(config_dir, 'clip_*.json')),
                          key=parse_sort_key)
