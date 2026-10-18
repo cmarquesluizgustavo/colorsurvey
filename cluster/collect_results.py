@@ -39,7 +39,8 @@ import tarfile
 
 CLIP_FIELDNAMES = [
     'Experiment', 'Colors', 'Subset', 'Loss_Type', 'Embed_Dim',
-    'Total_Loss', 'Loss_C2T', 'Loss_T2C', 'Loss_T2C_Above_Uniform',
+    'Total_Loss', 'Loss_C2T', 'Loss_T2C', 'Loss_T2C_Strict', 'Loss_T2C_Above_Uniform',
+    'Loss_T2C_Strict_Above_Uniform', 'T2C_Positives',
     'R_at_1', 'R_at_5', 'R_at_10', 'Median_Rank', 'Avg_Rank',
     'Class_Oriented_R_at_1', 'Class_Oriented_R_at_5', 'Class_Oriented_R_at_10',
     'MRR', 'Mean_Log_Odds', 'CLIP_Youden_J', 'Youden_J_at_5',
@@ -230,8 +231,15 @@ def _build_clip_entry(exp_dir, last_row, models_dir):
         'Total_Loss':     total_loss,
         'Loss_C2T':               _optional_float(last_row, 'loss_c2t'),
         'Loss_T2C':               _optional_float(last_row, 'loss_t2c'),
+        # Exact-label t->c loss, comparable across t2c_eps (18th round on); before
+        # t2c_eps existed, loss_t2c was that same quantity.
+        'Loss_T2C_Strict':        _optional_float(last_row, 'loss_t2c_strict', 'loss_t2c'),
         'Loss_T2C_Above_Uniform': _optional_float(last_row, 'loss_t2c_above_uniform',
                                                    'loss_t2c_above_floor'),
+        'Loss_T2C_Strict_Above_Uniform': _optional_float(last_row, 'loss_t2c_strict_above_uniform',
+                                                         'loss_t2c_above_uniform',
+                                                         'loss_t2c_above_floor'),
+        'T2C_Positives':          _optional_float(last_row, 't2c_positives'),
         'R_at_1':         float(last_row.get('r_at_1', 0) or 0),
         'R_at_5':         float(last_row.get('r_at_5', 0) or 0),
         'R_at_10':        float(last_row.get('r_at_10', 0) or 0),

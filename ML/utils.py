@@ -87,7 +87,8 @@ class ExperimentLogger:
             "timestamp", "global_step", "cycle", "step_type",
             "epoch_in_step", "step_time",
             "ce_loss", "triplet_loss", "total_loss",
-            "loss_c2t", "loss_t2c", "loss_t2c_above_uniform",
+            "loss_c2t", "loss_t2c", "loss_t2c_strict", "loss_t2c_above_uniform",
+            "loss_t2c_strict_above_uniform", "t2c_positives",
             "accuracy", "youdens_j", "train_accuracy", "train_youdens_j",
             # ColorCLIP retrieval metrics
             "r_at_1", "r_at_5", "r_at_10", "median_rank",
