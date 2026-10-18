@@ -54,7 +54,14 @@ class ColorCLIPTrainer(BaseTrainer):
         ).to(self.device)
 
         self.loss_type = self.config["training"].get("loss_type", "original")
-        loss_kwargs = {"temperature": self.config["training"].get("temperature", 0.07)}
+        loss_kwargs = {
+            "temperature": self.config["training"].get("temperature", 0.07),
+            "t2c_eps": self.config["training"].get("t2c_eps", 0),
+        }
+        # The pixel tolerance is measured on the 0-255 RGB grid, recovered from the
+        # model input; OKLCH input would need the raw RGB carried through the loader.
+        if loss_kwargs["t2c_eps"] and self.config["data"].get("color_space", "oklch") != "rgb":
+            raise ValueError("t2c_eps needs data.color_space = 'rgb'")
 
         # Prototype mode classifies each color against the K fixed class
         # prototypes, so cache the (K, vocab_size) class BoW table on device.
@@ -268,7 +275,10 @@ class ColorCLIPTrainer(BaseTrainer):
                 text_embeds = self.model.encode_text(self.class_bow_tensor)
             else:
                 color_embeds, text_embeds = self.model(colors, bow)
-            loss = self.loss_fn(color_embeds, text_embeds, labels)
+            # 0-255 pixels for t2c_eps (ignored when it is 0); colors are RGB/255
+            # whenever t2c_eps is set, which setup() enforces.
+            loss = self.loss_fn(color_embeds, text_embeds, labels,
+                                rgb=(colors * 255.0).round())
             loss.backward()
             self.optimizer.step()
 
