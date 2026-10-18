@@ -135,8 +135,13 @@ def main():
     X_rgb = X_test.astype(np.float64)
     X_oklch = rgb_to_oklch(X_test * 255.0, normalize=True).astype(np.float64)
 
-    model_input = torch.FloatTensor(X_oklch.astype(np.float32))
-    print(f"Encoding {len(X_test):,} samples...")
+    # Feed the model the space it was trained on. bundle["X_test"] is always raw
+    # normalized RGB; DataLoader applies the conversion only inside the CLIP loaders,
+    # so hardcoding OKLCH here silently scores an RGB-trained model on wrong inputs.
+    color_space = config["data"].get("color_space", "oklch")
+    model_input = torch.FloatTensor(
+        (X_oklch if color_space == "oklch" else X_test).astype(np.float32))
+    print(f"Encoding {len(X_test):,} samples (model input: {color_space})...")
     X_embed = encode_in_batches(model, model_input, device).astype(np.float64)
 
     # --- silhouette ---
