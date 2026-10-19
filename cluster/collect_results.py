@@ -190,8 +190,8 @@ def _optional_float(last_row, *keys):
     """Float value from the first key that is present and non-empty, else ''.
 
     Keeps genuinely-missing metrics blank instead of reporting them as 0.0:
-    the loss components only exist for the prototype loss, and the newer
-    metrics are absent from runs predating them.
+    before the 18th round the loss components were logged for the prototype loss
+    only, and the newer metrics are absent from runs predating them.
 
     Several keys allow reading a column that has been renamed: runs from before
     the 2026-08-17 `loss_t2c_above_floor` -> `loss_t2c_above_uniform` rename
@@ -232,7 +232,7 @@ def _build_clip_entry(exp_dir, last_row, models_dir):
         'Loss_C2T':               _optional_float(last_row, 'loss_c2t'),
         'Loss_T2C':               _optional_float(last_row, 'loss_t2c'),
         # Exact-label t->c loss, comparable across t2c_eps (18th round on); before
-        # t2c_eps existed, loss_t2c was that same quantity.
+        # t2c_eps existed, the prototype loss logged that same quantity as loss_t2c.
         'Loss_T2C_Strict':        _optional_float(last_row, 'loss_t2c_strict', 'loss_t2c'),
         'Loss_T2C_Above_Uniform': _optional_float(last_row, 'loss_t2c_above_uniform',
                                                    'loss_t2c_above_floor'),
