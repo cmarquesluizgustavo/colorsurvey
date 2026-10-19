@@ -16,6 +16,7 @@ class BaseCLIPLoss(nn.Module):
             batch colour within t2c_eps of it on every channel (L-inf box): each
             right colour earns the probability on itself plus its look-alikes, so
             a pick on the "navy" row one shade from a "blue" row counts for "blue".
+            A look-alike of several right colours counts once, split between them.
             Each loss keeps its own notion of "right" (its forward() says which).
             color->text is never changed. 0 (default) = off, training unchanged.
             Neighbours are searched in the batch only, so the effect scales with
@@ -62,49 +63,73 @@ class BaseCLIPLoss(nn.Module):
             near:       (N, N) from _near()
 
         Returns:
-            (loss, t2c_positives). Each right colour r earns the probability the
-            text puts on r or on any colour within eps of it, A(r) = sum of p(n) over
-            n near r; loss = -sum_r targets[r] * log A(r), averaged over texts. With
-            no look-alike in the batch A(r) = p(r) and this is the strict loss.
-            t2c_positives: mean number of colours per text that are accepted.
+            (loss, accepted). A colour n within eps of k(n) right colours gives each
+            of them p(n) / k(n), so it counts once in total. Each right colour r earns
+            A(r) = sum of p(n) / k(n) over n near r; loss = -sum_r targets[r] * log A(r),
+            averaged over texts. With no look-alike in the batch A(r) = p(r) and this
+            is the strict loss. accepted: (T, N) bool, the colours accepted per text.
         """
         log_p = F.log_softmax(logits_t2c, dim=1)
-        # A = p @ near (near is symmetric), in log space with a per-text shift for float32
-        shift = log_p.amax(dim=1, keepdim=True)
-        log_accepted = shift + ((log_p - shift).exp() @ near).clamp_min(1e-30).log()
-        # A(r) >= p(r); keeps the exact value if the shifted product underflows
-        log_accepted = torch.maximum(log_accepted, log_p)
         right = targets > 0
+        k = right.float() @ near                       # (T, N); near is symmetric
+        log_share = log_p - k.clamp_min(1).log()       # what each colour gives each r it is near
+        # A(r) = r's own share + its look-alikes' shares. The own share stays exact; the
+        # look-alikes are summed with a per-text shift, so a float32 underflow only drops
+        # their credit and the loss and its gradient on r stay right.
+        shift = log_p.amax(dim=1, keepdim=True)
+        others = (log_share - shift).exp() @ (near - torch.eye(near.shape[0], device=near.device))
+        tiny = torch.finfo(others.dtype).tiny
+        log_others = torch.where(others > tiny, others.clamp_min(tiny).log() + shift, float("-inf"))
+        log_accepted = torch.logaddexp(log_share.masked_fill(~right, 0.0), log_others)
         loss = -(targets * log_accepted.masked_fill(~right, 0.0)).sum(dim=1).mean()
-        t2c_positives = ((right.float() @ near) > 0).sum(dim=1).float().mean().item()
-        return loss, t2c_positives
+        return loss, k > 0
 
-    def _record(self, loss_c2t, loss_t2c, loss_t2c_strict, t2c_positives, uniform_bound):
+    def _t2c(self, loss_c2t, loss_t2c_strict, logits_t2c, targets, rgb, hide=None):
         """
-        Per-batch components for metrics.csv, averaged per epoch by the trainer.
+        The t->c term to train on; records this batch's components for metrics.csv
+        (averaged per epoch by the trainer).
 
-        loss_t2c:        the t->c term being trained (accept rule when t2c_eps > 0)
-        loss_t2c_strict: the same probabilities scored on exact pairs only -- the
-                         eps 0 rule; measured, never trained on. Equal to loss_t2c
-                         at eps 0, and to loss_t2c of every round before t2c_eps.
-        t2c_positives:   colours accepted per text, on average (data-only: it
-                         depends on labels, pixels, eps and batch size, not the model)
-        *_above_uniform: each loss minus uniform_bound, the mean over texts of
-                         log(number of exact right colours) -- the score of a model
-                         that splits its pick evenly over them. Not reachable in
-                         practice (research_plan.md note 5). Under the accept rule
-                         it is the best score only while no colour is a look-alike
-                         of two right colours; with such overlaps the best is lower.
+        Args:
+            loss_c2t:        the loss's c->t term (recorded only)
+            loss_t2c_strict: the loss's own eps 0 t->c term
+            logits_t2c:      (T, N) text-to-colour logits, unmasked
+            targets:         (T, N) share 1/m on each of a text's m right colours
+            rgb:             (N, 3) 0-255 pixels; used only when t2c_eps > 0
+            hide:            optional (N, N) bool, colours the strict term masks; under
+                             the accept rule only those outside a text's box stay masked
+
+        Components:
+            loss_t2c:        the t->c term being trained (accept rule when t2c_eps > 0)
+            loss_t2c_strict: the loss's eps 0 t->c term; measured, never trained on.
+                             Equal to loss_t2c at eps 0, and to the loss_t2c the
+                             prototype loss logged before t2c_eps. For masked, the eps 0
+                             masking differs from the eps run's, so it is not quite the
+                             same probabilities scored strictly.
+            t2c_positives:   colours accepted per text, on average (data-only: it
+                             depends on labels, pixels, eps and batch size, not the model)
+            *_above_uniform: each loss minus the mean over texts of log(number of exact
+                             right colours) -- the score of a model that splits its pick
+                             evenly over them, the best either rule allows. Not reachable
+                             in practice (research_plan.md note 5).
         """
-        ub = float(uniform_bound)
+        right = targets > 0
+        if self.t2c_eps > 0:
+            near = self._near(rgb)
+            if hide is not None:
+                logits_t2c = logits_t2c.masked_fill(hide & (near == 0), float("-inf"))
+            loss_t2c, accepted = self._accept_t2c(logits_t2c, targets, near)
+        else:
+            loss_t2c, accepted = loss_t2c_strict, right
+        uniform_bound = right.sum(dim=1).float().log().mean().item()
         self.last_components = {
             "loss_c2t": loss_c2t.item(),
             "loss_t2c": loss_t2c.item(),
             "loss_t2c_strict": loss_t2c_strict.item(),
-            "t2c_positives": t2c_positives,
-            "loss_t2c_above_uniform": loss_t2c.item() - ub,
-            "loss_t2c_strict_above_uniform": loss_t2c_strict.item() - ub,
+            "t2c_positives": accepted.sum(dim=1).float().mean().item(),
+            "loss_t2c_above_uniform": loss_t2c.item() - uniform_bound,
+            "loss_t2c_strict_above_uniform": loss_t2c_strict.item() - uniform_bound,
         }
+        return loss_t2c
 
 
 class OriginalCLIPLoss(BaseCLIPLoss):
@@ -142,13 +167,8 @@ class OriginalCLIPLoss(BaseCLIPLoss):
 
         # Symmetric cross-entropy
         loss_c2t = F.cross_entropy(logits, targets)
-        loss_t2c_strict = F.cross_entropy(logits.t(), targets)
-        if self.t2c_eps > 0:
-            diagonal = torch.eye(n, device=logits.device)
-            loss_t2c, t2c_positives = self._accept_t2c(logits.t(), diagonal, self._near(rgb))
-        else:
-            loss_t2c, t2c_positives = loss_t2c_strict, 1.0
-        self._record(loss_c2t, loss_t2c, loss_t2c_strict, t2c_positives, uniform_bound=0.0)
+        loss_t2c = self._t2c(loss_c2t, F.cross_entropy(logits.t(), targets), logits.t(),
+                             torch.eye(n, device=logits.device), rgb)
 
         return (loss_c2t + loss_t2c) / 2.0
 
@@ -201,17 +221,9 @@ class MaskedCLIPLoss(BaseCLIPLoss):
 
         # Symmetric cross-entropy
         loss_c2t = F.cross_entropy(logits_masked, targets)
-        loss_t2c_strict = F.cross_entropy(logits_masked.t(), targets)
-        if self.t2c_eps > 0:
-            near = self._near(rgb)
-            # same_label and near are symmetric, so they also index the transposed
-            # (text, colour) matrix: mask same-label colours outside text j's box
-            t2c_mask = same_label & (near == 0)
-            loss_t2c, t2c_positives = self._accept_t2c(
-                logits.t().masked_fill(t2c_mask, float("-inf")), diagonal.float(), near)
-        else:
-            loss_t2c, t2c_positives = loss_t2c_strict, 1.0
-        self._record(loss_c2t, loss_t2c, loss_t2c_strict, t2c_positives, uniform_bound=0.0)
+        # same_label is symmetric, so it also indexes the transposed (text, colour) matrix
+        loss_t2c = self._t2c(loss_c2t, F.cross_entropy(logits_masked.t(), targets), logits.t(),
+                             diagonal.float(), rgb, hide=same_label)
 
         return (loss_c2t + loss_t2c) / 2.0
 
@@ -282,20 +294,14 @@ class PrototypeCLIPLoss(BaseCLIPLoss):
         pos = labels.unsqueeze(0) == present.unsqueeze(1)    # (P, N)
         positives_per_class = pos.sum(dim=1, keepdim=True)
         soft_targets = pos.float() / positives_per_class
-        loss_t2c_strict = F.cross_entropy(logits_t2c, soft_targets)
-        if self.t2c_eps > 0:
-            loss_t2c, t2c_positives = self._accept_t2c(logits_t2c, soft_targets, self._near(rgb))
-        else:
-            loss_t2c = loss_t2c_strict
-            t2c_positives = positives_per_class.float().mean().item()
-
-        # Distance from the uniform-over-positives bound. NOT headroom: that bound
-        # assumes the prototype could single out exactly its own labelled rows, which
-        # is impossible -- a row is a colour, and the unlabelled near-identical shades
-        # look the same to it. The real floor is q(n|k) proportional to p(k | rgb_n),
-        # measured at ~5.2 nats vs this bound's 2.3 (see research_plan.md note 5).
-        uniform_bound = positives_per_class.float().log().mean()
-        self._record(loss_c2t, loss_t2c, loss_t2c_strict, t2c_positives, uniform_bound)
+        # loss_t2c_above_uniform is the distance from the uniform-over-positives bound.
+        # NOT headroom: that bound assumes the prototype could single out exactly its own
+        # labelled rows, which is impossible -- a row is a colour, and the unlabelled
+        # near-identical shades look the same to it. The real floor is q(n|k)
+        # proportional to p(k | rgb_n), measured at ~5.2 nats vs this bound's 2.3 (see
+        # research_plan.md note 5).
+        loss_t2c = self._t2c(loss_c2t, F.cross_entropy(logits_t2c, soft_targets), logits_t2c,
+                             soft_targets, rgb)
 
         return (loss_c2t + self.t2c_weight * loss_t2c) / (1.0 + self.t2c_weight)
 
@@ -342,12 +348,7 @@ class SupConCLIPLoss(BaseCLIPLoss):
 
         # Symmetric cross-entropy (seamlessly handles probability distributions)
         loss_c2t = F.cross_entropy(logits, soft_targets)
-        loss_t2c_strict = F.cross_entropy(logits.t(), soft_targets.t())
-        if self.t2c_eps > 0:
-            loss_t2c, t2c_positives = self._accept_t2c(logits.t(), soft_targets.t(), self._near(rgb))
-        else:
-            loss_t2c, t2c_positives = loss_t2c_strict, positives_per_row.mean().item()
-        self._record(loss_c2t, loss_t2c, loss_t2c_strict, t2c_positives,
-                     uniform_bound=positives_per_row.log().mean())
+        loss_t2c = self._t2c(loss_c2t, F.cross_entropy(logits.t(), soft_targets.t()), logits.t(),
+                             soft_targets.t(), rgb)
 
         return (loss_c2t + loss_t2c) / 2.0

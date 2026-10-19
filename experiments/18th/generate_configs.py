@@ -12,12 +12,15 @@ pick (softmax over the batch). Its right pixels R are the exact pairs: one pixel
 original and masked, every pixel with that name for prototype and supcon.
   strict (eps 0):  loss = -(1/|R|) * sum over r in R of log p(r)
   accept (eps):    loss = -(1/|R|) * sum over r in R of log A(r),
-                   A(r) = p(r) + p of every batch pixel within eps of r
+                   A(r) = p(r) + p of every batch pixel within eps of r, each divided by
+                   the number of right pixels it is within eps of
 So probability on a look-alike counts as probability on the right pixel. Example: P1 is
 the pair, P2 is within eps of P1, the model puts 0.5 on P1 and 0.3 on P2: strict loss
 -log 0.5 = 0.69, accept loss -log 0.8 = 0.22. With no look-alike in the batch, A(r) = p(r)
 and the two are equal. Masked keeps masking same-name pixels outside the eps box.
-A pixel that is a look-alike of two right pixels counts for both.
+A pixel that is a look-alike of two right pixels counts once, half for each. Counted for
+both, a pick on one pixel between them would beat a pick spread over the right pixels
+themselves, pulling each name towards where its pixels are most crowded.
 
 What eps means (measured on the 96c data):
   - Perceptually: OKLab dE of an eps step has median 0.003 / 0.013 / 0.027 / 0.042 at
@@ -43,8 +46,8 @@ RGB input. Each setting is the best one the earlier rounds support without dispu
     0.5-0.9 R@1 points and has one prototype pair per name count: not undisputed.
     dim64_ch64_th256 also has earlier runs for all four losses at 14 / 96 / 797 names.
   - lr 3e-4, temperature 0.07: lr 1e-5..3e-3 (12th) and temperature 0.02..0.2 (10th)
-    move R@1 < 0.007. Temperature 0.2 had the best silhouette, but on one run per value;
-    the 16th round tests it, so it is not settled.
+    move R@1 < 0.007. Temperature 0.2 had the best silhouette, but on one run per value,
+    so it is not settled.
   - t2c_weight 1, not 0.1: 0.1 had the best silhouette in the 14th round (+0.006, single
     seed), but this round tests a change to the t->c term, and down-weighting that term
     would shrink the effect being measured.
@@ -60,17 +63,19 @@ Grid: names {14, 96, 797} x losses {prototype, supcon, original, masked}
 How to read this round. metrics.csv has one row per epoch; the t->c columns are averages
 over that epoch's training batches, for every loss:
   loss_t2c                       the t->c loss trained on (accept rule at eps > 0)
-  loss_t2c_strict                the same probabilities scored with the eps 0 rule (exact
-                                 pairs only); measured, never trained on. Equals loss_t2c
-                                 at eps 0, and loss_t2c of every earlier round.
+  loss_t2c_strict                the eps 0 rule's score (exact pairs only); measured, never
+                                 trained on. Equals loss_t2c at eps 0, and the loss_t2c the
+                                 prototype loss logged in earlier rounds. For prototype,
+                                 supcon and original it scores the same probabilities as
+                                 loss_t2c; masked hides fewer pixels under the accept rule,
+                                 so its two columns come from slightly different ones.
   t2c_positives                  pixels accepted per text, on average (exact pairs plus
                                  look-alikes). Depends on the data, eps and batch size,
                                  not on the model: it confirms eps did something.
   loss_t2c_above_uniform         loss_t2c minus log(number of exact pairs), averaged over
   loss_t2c_strict_above_uniform  texts -- the score of a model that splits its pick evenly
-                                 over the exact pairs. Not reachable in practice (note 5);
-                                 under the accept rule it is the best score only while no
-                                 pixel is a look-alike of two right pixels.
+                                 over the exact pairs, the best either rule allows. Not
+                                 reachable in practice (note 5).
 Three comparisons, each within one loss and one name count:
   1. loss_t2c_strict, eps 0 run vs eps run, epoch by epoch: did training under the accept
      rule make the model better, worse or faster at finding the exact pair? eps 0 is the
