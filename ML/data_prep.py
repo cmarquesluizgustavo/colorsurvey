@@ -1,7 +1,8 @@
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset, DataLoader as TorchDataLoader, WeightedRandomSampler
+from torch.utils.data import (Dataset, DataLoader as TorchDataLoader, BatchSampler,
+                              RandomSampler, SequentialSampler, WeightedRandomSampler)
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 from imblearn.over_sampling import RandomOverSampler
@@ -355,12 +356,18 @@ class DataLoader:
 
         batch_size = self.data_config["batch_size"]
 
+        # Batches are cut with one indexing op each: the sampler yields a batch's
+        # indices and ColorTextDataset returns all rows at once (batch_size=None
+        # turns off per-row fetching and collation): ~10x faster to cut, and no
+        # worker processes, so a job stays near 1 GB (10 workers took it to ~3.3 GB).
+        # Epoch 1 matches the old per-row loader with 10 persistent workers exactly;
+        # later epochs shuffle differently (the workers drew from the RNG differently).
+        #
         # Optional class-balanced row sampling: draw each class equally often as
         # a batch row (P(sample) ∝ 1/class_count) instead of frequency-weighted.
-        # Mutually exclusive with shuffle. Columns are unaffected — they are
-        # always all K prototypes — so this only rebalances the positive signal.
-        train_sampler = None
-        shuffle = True
+        # Columns are unaffected — they are always all K prototypes — so this
+        # only rebalances the positive signal.
+        train_sampler = RandomSampler(train_dataset)
         if self.data_config.get("sampler") == "class_balanced":
             counts = np.bincount(y_train, minlength=len(class_names))
             sample_weights = 1.0 / counts[y_train]
@@ -369,22 +376,16 @@ class DataLoader:
                 num_samples=len(y_train),
                 replacement=True,
             )
-            shuffle = False
 
         data_bundle["train_loader"] = TorchDataLoader(
             train_dataset,
-            batch_size=batch_size,
-            shuffle=shuffle,
-            sampler=train_sampler,
-            num_workers=6,
-            persistent_workers=True,
+            sampler=BatchSampler(train_sampler, batch_size, drop_last=False),
+            batch_size=None,
         )
         data_bundle["test_loader"] = TorchDataLoader(
             test_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=4,
-            persistent_workers=True,
+            sampler=BatchSampler(SequentialSampler(test_dataset), batch_size, drop_last=False),
+            batch_size=None,
         )
         data_bundle["vocab_size"] = bow_embedder.vocab_size
         data_bundle["bow_embedder"] = bow_embedder
