@@ -31,6 +31,19 @@ and queues one job per line.
 It refuses to submit when the list mixes rounds, or when that round already has jobs
 queued; `FORCE=1 bash cluster/submit.sh 14th` overrides the second check.
 
+`generate_experiments_txt.py` also skips configs still in the queue, so it can be re-run
+while a round is going: its list holds only what crashed or never ran. To resubmit those,
+give the retry its own log tag — HTCondor numbers jobs from 0 again, so reusing `14th`
+would overwrite `logs/14th/`:
+
+```bash
+python3 cluster/generate_experiments_txt.py 14th
+bash cluster/submit.sh 14th_r2        # logs go to logs/14th_r2/
+```
+
+Results are unaffected: a retried run lands in its own `run_<timestamp>/`, and fetching
+keeps the newest run per config. Avoid `FORCE=1`: it reuses the tag and overwrites logs.
+
 ## Watch it
 
 ```bash

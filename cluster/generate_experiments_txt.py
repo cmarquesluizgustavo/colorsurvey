@@ -3,6 +3,9 @@ Generate sorted experiments.txt with per-job memory requests.
 
 Sorting: smallest configs first (top_n_colors, embed_dim, hidden complexity).
 
+Skips configs that already finished and configs still in the HTCondor queue, so it is
+safe to re-run while a round is going: the output lists only what crashed or never ran.
+
 Usage:
     python cluster/generate_experiments_txt.py <round>
     e.g. python cluster/generate_experiments_txt.py 14th     (reads experiments/14th/)
@@ -10,14 +13,19 @@ Usage:
 import glob
 import os
 import re
+import subprocess
 import sys
 
 from collect_results import FINAL_CHECKPOINT, round_runs
 
-# Memory request per color count; anything unlisted gets 2000 MB. The larger counts ask
-# for more than the smallest slot tier holds, so they only match the bigger workers.
-MEMORY_MAP = {14: 1000, 96: 1000, 797: 2000, 5363: 2000}
-DEFAULT_MEMORY = 2000
+# Memory request per color count. Slots are static: node01 12 x 1317 MB, node04 8 x 2003,
+# node08 6 x 2597 (2026-10-19), and a job only matches a slot at least as large as its
+# request. With batched loading a job needs ~1.0 GB (14/96 names) to ~2.1 GB (797), so it
+# runs on every node. 2597 MB is set only to steer jobs to node08, the one node with a GPU
+# (TITAN X), which trains ~100x faster than the others' CPUs. To spread over all nodes,
+# lower it: 1300 fits every slot at 14/96 names.
+MEMORY_MAP = {14: 2597, 96: 2597, 797: 2597, 5363: 2597}
+DEFAULT_MEMORY = 2597
 
 
 def parse_sort_key(path):
@@ -28,6 +36,18 @@ def parse_sort_key(path):
     ch = list(map(int, re.search(r'_ch([\dx]+)', name).group(1).split('x')))
     th = list(map(int, re.search(r'_th([\dx]+)', name).group(1).split('x')))
     return (colors, dim, len(ch), ch, len(th), th)
+
+
+def queued_experiments():
+    """Experiment names of this user's jobs in the HTCondor queue (any state); empty off-cluster."""
+    try:
+        out = subprocess.run(['condor_q', '-submitter', os.environ.get('USER', ''),
+                              '-af', 'Args'],
+                             capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return set()
+    return {os.path.basename(arg.strip().rstrip(','))[:-5]
+            for arg in out.split() if arg.strip().rstrip(',').endswith('.json')}
 
 
 def main():
@@ -55,12 +75,16 @@ def main():
         if os.path.exists(os.path.join(run_dir, 'models', FINAL_CHECKPOINT)):
             completed.add(name)
 
+    queued = queued_experiments()
+
     all_configs = sorted(glob.glob(os.path.join(config_dir, 'clip_*.json')),
                          key=parse_sort_key)
 
     # Filter out completed
+    names = {p: os.path.basename(p).replace('.json', '') for p in all_configs}
+    in_queue = [p for p in all_configs if names[p] in queued and names[p] not in completed]
     configs = [p for p in all_configs
-               if os.path.basename(p).replace('.json', '') not in completed]
+               if names[p] not in completed and names[p] not in queued]
 
     out_path = os.path.join(os.path.dirname(__file__), 'experiments.txt')
     with open(out_path, 'w') as f:
@@ -71,7 +95,7 @@ def main():
             f.write(f'{rel}, {mem}\n')
 
     print(f"Total configs: {len(all_configs)}, Completed: {len(completed)}, "
-          f"Pending: {len(configs)}")
+          f"In queue: {len(in_queue)}, Pending: {len(configs)}")
     print(f"Wrote {len(configs)} entries to {out_path}")
     # Show first and last few
     with open(out_path) as f:
