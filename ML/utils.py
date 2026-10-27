@@ -80,7 +80,8 @@ class ExperimentLogger:
 
         self.writer = SummaryWriter(log_dir=self.log_dir)
         
-        # Fixed CSV structure with all possible fields
+        # Fixed CSV structure with all possible fields. A metric missing from this list
+        # still reaches TensorBoard but is silently dropped from metrics.csv.
         self.csv_path = os.path.join(self.log_dir, "metrics.csv")
         self.csv_file = open(self.csv_path, "w", newline="")
         self.fieldnames = [

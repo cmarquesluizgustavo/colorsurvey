@@ -44,12 +44,13 @@ CLIP_FIELDNAMES = [
     'R_at_1', 'R_at_5', 'R_at_10', 'Median_Rank', 'Avg_Rank',
     'Class_Oriented_R_at_1', 'Class_Oriented_R_at_5', 'Class_Oriented_R_at_10',
     'MRR', 'Mean_Log_Odds', 'CLIP_Youden_J', 'Youden_J_at_5',
-    'Temperature', 'Final_Cycle', 'Timestamp', 'Status',
+    'Temperature', 'Final_Cycle', 'Timestamp', 'Status', 'Metrics_Source', 'Metrics_Epoch',
 ]
 
 # Columns that sort ascending (grouping); everything else sorts descending (metrics)
 ASCENDING_COLUMNS = {'Experiment', 'Colors', 'Subset', 'Loss_Type', 'Embed_Dim',
-                     'Final_Cycle', 'Timestamp', 'Status'}
+                     'Final_Cycle', 'Timestamp', 'Status', 'Metrics_Source',
+                     'Metrics_Epoch'}
 
 LOSS_TYPE_MAP = {'mask': 'masked', 'orig': 'original', 'supc': 'supcon',
                  'proto': 'prototype'}
@@ -204,7 +205,7 @@ def _optional_float(last_row, *keys):
     return ''
 
 
-def _build_clip_entry(exp_dir, last_row, models_dir):
+def _build_clip_entry(exp_dir, last_row, models_dir, final_metrics=None):
     """Build a dict with only CLIP-profile keys from a metrics row.
 
     Status flags rows whose numbers are not results, keeping the values so the failure
@@ -215,6 +216,23 @@ def _build_clip_entry(exp_dir, last_row, models_dir):
                      before it ended, so the last row is a partial epoch count.
     """
     _, colors, _, extra = parse_experiment_details(exp_dir)
+    # Retrieval metrics and Temperature come from final_metrics.json (best checkpoint,
+    # whole test set) when there is one; losses, Final_Cycle and Timestamp always come
+    # from the last row. Metrics_Source says where the metrics came from:
+    #   'final'      - written by the trainer at the end of training
+    #   'rescored'   - written afterwards by scripts/rescore_checkpoints.py from the
+    #                  saved best checkpoint, for runs that predate the trainer writing it
+    #   'last_epoch' - neither exists: the last training epoch's row, scored on only
+    #                  max_eval_samples test samples and up to `patience` epochs past
+    #                  the checkpoint
+    if final_metrics is not None:
+        metric_row = {**last_row, **final_metrics}
+        source = final_metrics.get('source', 'final')
+        metrics_epoch = final_metrics.get('epoch', '')
+    else:
+        metric_row = last_row
+        source = 'last_epoch'
+        metrics_epoch = last_row.get('cycle', '')
     total_loss = float(last_row.get('total_loss', 0) or 0)
     if not math.isfinite(total_loss):
         status = 'diverged'
@@ -240,22 +258,24 @@ def _build_clip_entry(exp_dir, last_row, models_dir):
                                                          'loss_t2c_above_uniform',
                                                          'loss_t2c_above_floor'),
         'T2C_Positives':          _optional_float(last_row, 't2c_positives'),
-        'R_at_1':         float(last_row.get('r_at_1', 0) or 0),
-        'R_at_5':         float(last_row.get('r_at_5', 0) or 0),
-        'R_at_10':        float(last_row.get('r_at_10', 0) or 0),
-        'Median_Rank':    float(last_row.get('median_rank', 0) or 0),
-        'Avg_Rank':               _optional_float(last_row, 'avg_rank'),
-        'Class_Oriented_R_at_1':  _optional_float(last_row, 'class_oriented_r_at_1'),
-        'Class_Oriented_R_at_5':  _optional_float(last_row, 'class_oriented_r_at_5'),
-        'Class_Oriented_R_at_10': _optional_float(last_row, 'class_oriented_r_at_10'),
-        'MRR':            float(last_row.get('mrr', 0) or 0),
-        'Mean_Log_Odds':  float(last_row.get('mean_log_odds', 0) or 0),
-        'CLIP_Youden_J':  float(last_row.get('youdens_j', 0) or 0),
-        'Youden_J_at_5':          _optional_float(last_row, 'youdens_j_at_5'),
-        'Temperature':    float(last_row.get('temperature', 0) or 0),
+        'R_at_1':         float(metric_row.get('r_at_1', 0) or 0),
+        'R_at_5':         float(metric_row.get('r_at_5', 0) or 0),
+        'R_at_10':        float(metric_row.get('r_at_10', 0) or 0),
+        'Median_Rank':    float(metric_row.get('median_rank', 0) or 0),
+        'Avg_Rank':               _optional_float(metric_row, 'avg_rank'),
+        'Class_Oriented_R_at_1':  _optional_float(metric_row, 'class_oriented_r_at_1'),
+        'Class_Oriented_R_at_5':  _optional_float(metric_row, 'class_oriented_r_at_5'),
+        'Class_Oriented_R_at_10': _optional_float(metric_row, 'class_oriented_r_at_10'),
+        'MRR':            float(metric_row.get('mrr', 0) or 0),
+        'Mean_Log_Odds':  float(metric_row.get('mean_log_odds', 0) or 0),
+        'CLIP_Youden_J':  float(metric_row.get('youdens_j', 0) or 0),
+        'Youden_J_at_5':          _optional_float(metric_row, 'youdens_j_at_5'),
+        'Temperature':    float(metric_row.get('temperature', 0) or 0),
         'Final_Cycle':    last_row.get('cycle', ''),
         'Timestamp':      last_row.get('timestamp', ''),
         'Status':         status,
+        'Metrics_Source': source,
+        'Metrics_Epoch':  metrics_epoch,
     }
 
 
@@ -448,7 +468,14 @@ def main():
                     continue
                 models_dir = (os.path.join('experiments', experiment_name, 'models', exp_dir)
                               if local_mode else os.path.join(run_dir, 'models'))
-                completed.append(_build_clip_entry(exp_dir, rows[-1], models_dir))
+                final_path = (os.path.join('experiments', experiment_name, 'metrics',
+                                           f'{exp_dir}_final_metrics.json')
+                              if local_mode else os.path.join(run_dir, 'final_metrics.json'))
+                final_metrics = None
+                if os.path.exists(final_path):
+                    with open(final_path) as f:
+                        final_metrics = json.load(f)
+                completed.append(_build_clip_entry(exp_dir, rows[-1], models_dir, final_metrics))
             except Exception as e:
                 print(f"Error processing {exp_dir}: {e}")
 
@@ -493,6 +520,9 @@ def main():
             metrics_src = os.path.join(run_dir, 'metrics.csv') if not local_mode else run_dir
             if os.path.exists(metrics_src):
                 shutil.copy2(metrics_src, f'{results_dir}/metrics/{exp_name}_metrics.csv')
+            final_src = os.path.join(run_dir, 'final_metrics.json')
+            if os.path.exists(final_src):
+                shutil.copy2(final_src, f'{results_dir}/metrics/{exp_name}_final_metrics.json')
             for tb_file in glob.glob(f'{run_dir}/events.out.tfevents.*'):
                 tb_dst = f'{results_dir}/tensorboards/{exp_name}'
                 os.makedirs(tb_dst, exist_ok=True)

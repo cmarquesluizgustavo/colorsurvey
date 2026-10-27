@@ -1,3 +1,4 @@
+import json
 import os
 import time
 import numpy as np
@@ -97,6 +98,7 @@ class ColorCLIPTrainer(BaseTrainer):
         self.min_delta = es_cfg.get("min_delta", 0.0)
         self.es_metric = es_cfg.get("metric", "r_at_1")
         self.best_metric = -1.0
+        self.best_epoch = 0
         self.patience_counter = 0
 
     def train(self):
@@ -138,14 +140,19 @@ class ColorCLIPTrainer(BaseTrainer):
                 "temperature": temp,
             })
 
-            if self._check_early_stopping(clip_metrics):
+            if self._check_early_stopping(clip_metrics, epoch):
                 print(f"\nEarly stopping at epoch {epoch} "
                       f"(best {self.es_metric}: {self.best_metric:.4f})")
                 self._restore_best()
                 break
         else:
-            # No early stopping — save at end
-            self.save_model()
+            # Ran every epoch. With early stopping on, the best epoch may be an earlier
+            # one, so restore it as the early-stopped path does; otherwise keep the last.
+            if self.patience > 0:
+                self._restore_best()
+            else:
+                self.best_epoch = self.epochs
+                self.save_model()
 
         print("\nFinal evaluation:")
         # Raw scores are only needed when we are asked to persist them.
@@ -155,6 +162,7 @@ class ColorCLIPTrainer(BaseTrainer):
                                       return_logits=needs_logits)
         self._print_metrics(final_metrics)
         self._save_eval_dump(final_metrics)
+        self._save_final_metrics(final_metrics)
 
     def evaluate(self, data_loader=None, max_samples=None, return_logits=False) -> dict:
         """
@@ -208,6 +216,27 @@ class ColorCLIPTrainer(BaseTrainer):
         k = len(self.label_encoder.classes_)
         counts = torch.bincount(y_train, minlength=k).float().clamp(min=1)
         return counts.sum() / (k * counts)
+
+    # Scalar metrics of the final evaluation that collect_results.py reads.
+    _FINAL_METRIC_KEYS = (
+        "r_at_1", "r_at_5", "r_at_10", "median_rank", "avg_rank", "mrr",
+        "class_oriented_r_at_1", "class_oriented_r_at_5", "class_oriented_r_at_10",
+        "youdens_j", "youdens_j_at_5", "mean_log_odds",
+    )
+
+    def _save_final_metrics(self, metrics: dict):
+        """
+        Save the final evaluation (best checkpoint, whole test set) to
+        final_metrics.json next to metrics.csv. metrics.csv's last row is the last
+        training epoch on max_eval_samples test samples, not this. `epoch` is the
+        epoch the evaluated checkpoint comes from.
+        """
+        out = {k: float(metrics[k]) for k in self._FINAL_METRIC_KEYS}
+        out["n_samples"] = int(len(metrics["ranks"]))
+        out["temperature"] = self.loss_fn.log_temperature.exp().item()
+        out["epoch"] = self.best_epoch
+        with open(os.path.join(self.logger.log_dir, "final_metrics.json"), "w") as f:
+            json.dump(out, f, indent=2)
 
     def _save_eval_dump(self, metrics: dict):
         """
@@ -299,7 +328,7 @@ class ColorCLIPTrainer(BaseTrainer):
         mean_components = {key: value / n_batches for key, value in component_sums.items()}
         return total_loss / n_batches, mean_components
 
-    def _check_early_stopping(self, metrics: dict) -> bool:
+    def _check_early_stopping(self, metrics: dict, epoch: int) -> bool:
         """Returns True if training should stop."""
         if self.patience <= 0:
             return False
@@ -307,6 +336,7 @@ class ColorCLIPTrainer(BaseTrainer):
         val = metrics[self.es_metric]
         if val > self.best_metric + self.min_delta:
             self.best_metric = val
+            self.best_epoch = epoch
             self.patience_counter = 0
             # Save best checkpoint
             path = os.path.join(self.models_dir, "best_color_clip_model.pth")
