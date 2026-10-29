@@ -266,6 +266,39 @@ def load_and_preprocess_data(csv_path, top_n=100, exclude_top_n=0, test_size=0.2
     return X_train_balanced, X_test, y_train_balanced, y_test, le
 
 
+def test_parts(y_test, n_select, seed=0):
+    """
+    Row indices of the three parts of a test set (research_plan.md note 10).
+
+      select: the first n_select rows. Every epoch is scored on them (max_eval_samples)
+              and they choose the checkpoint.
+      a, b:   the rest, halved by name with a fixed shuffle. A chooses between runs
+              (best setup, best settings); B only reports.
+
+    Each name's remaining rows are split as evenly as possible; when a name has an odd
+    count the extra row alternates between A and B, so the halves stay the same size.
+    `seed` is fixed rather than the run's seed, so the halves never depend on training.
+    """
+    y_test = np.asarray(y_test)
+    n_select = min(n_select, len(y_test))
+    rest = np.arange(n_select, len(y_test))
+    rng = np.random.default_rng(seed)
+    a, b, extra_to_a = [], [], True
+    for label in np.unique(y_test[rest]):
+        rows = rng.permutation(rest[y_test[rest] == label])
+        half = len(rows) // 2
+        if len(rows) % 2:
+            half += extra_to_a
+            extra_to_a = not extra_to_a
+        a.append(rows[:half])
+        b.append(rows[half:])
+    return {
+        "select": np.arange(n_select),
+        "a": np.sort(np.concatenate(a or [np.empty(0, int)])),
+        "b": np.sort(np.concatenate(b or [np.empty(0, int)])),
+    }
+
+
 class DataLoader:
     """Unified data loader for all training methods."""
     
