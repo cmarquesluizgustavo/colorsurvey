@@ -45,12 +45,13 @@ CLIP_FIELDNAMES = [
     'Class_Oriented_R_at_1', 'Class_Oriented_R_at_5', 'Class_Oriented_R_at_10',
     'MRR', 'Mean_Log_Odds', 'CLIP_Youden_J', 'Youden_J_at_5',
     'Temperature', 'Final_Cycle', 'Timestamp', 'Status', 'Metrics_Source', 'Metrics_Epoch',
+    'R_at_1_A', 'R_at_1_B', 'Last_Beats_Best',
 ]
 
 # Columns that sort ascending (grouping); everything else sorts descending (metrics)
 ASCENDING_COLUMNS = {'Experiment', 'Colors', 'Subset', 'Loss_Type', 'Embed_Dim',
                      'Final_Cycle', 'Timestamp', 'Status', 'Metrics_Source',
-                     'Metrics_Epoch'}
+                     'Metrics_Epoch', 'Last_Beats_Best'}
 
 LOSS_TYPE_MAP = {'mask': 'masked', 'orig': 'original', 'supc': 'supcon',
                  'proto': 'prototype'}
@@ -217,7 +218,7 @@ def _build_clip_entry(exp_dir, last_row, models_dir, final_metrics=None):
     """
     _, colors, _, extra = parse_experiment_details(exp_dir)
     # Retrieval metrics and Temperature come from final_metrics.json (best checkpoint,
-    # whole test set) when there is one; losses, Final_Cycle and Timestamp always come
+    # scored on the clean test rows) when there is one; losses, Final_Cycle and Timestamp always come
     # from the last row. Metrics_Source says where the metrics came from:
     #   'final'      - written by the trainer at the end of training
     #   'rescored'   - written afterwards by scripts/rescore_checkpoints.py from the
@@ -225,10 +226,16 @@ def _build_clip_entry(exp_dir, last_row, models_dir, final_metrics=None):
     #   'last_epoch' - neither exists: the last training epoch's row, scored on only
     #                  max_eval_samples test samples and up to `patience` epochs past
     #                  the checkpoint
+    # The clean rows are the test rows after the first max_eval_samples, which chose the
+    # epoch (research_plan.md note 10), split into halves A and B. R_at_1_A / R_at_1_B:
+    # pick winners on A, report them on B. Last_Beats_Best: the last epoch beat the
+    # restored best on A by more than noise (runs that saved the last epoch).
+    parts = {}
     if final_metrics is not None:
         metric_row = {**last_row, **final_metrics}
         source = final_metrics.get('source', 'final')
         metrics_epoch = final_metrics.get('epoch', '')
+        parts = final_metrics['parts']
     else:
         metric_row = last_row
         source = 'last_epoch'
@@ -276,6 +283,9 @@ def _build_clip_entry(exp_dir, last_row, models_dir, final_metrics=None):
         'Status':         status,
         'Metrics_Source': source,
         'Metrics_Epoch':  metrics_epoch,
+        'R_at_1_A':       parts.get('a', {}).get('r_at_1', ''),
+        'R_at_1_B':       parts.get('b', {}).get('r_at_1', ''),
+        'Last_Beats_Best': final_metrics.get('last_beats_best', '') if final_metrics else '',
     }
 
 

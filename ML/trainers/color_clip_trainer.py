@@ -10,6 +10,7 @@ from ML.models.clip_models import ColorCLIPModel
 from ML.losses.clip_loss import (
     OriginalCLIPLoss, MaskedCLIPLoss, SupConCLIPLoss, PrototypeCLIPLoss,
 )
+from ML.data_prep import test_parts
 from ML.metrics import compute_clip_class_metrics
 from ML.utils import get_device
 
@@ -100,6 +101,8 @@ class ColorCLIPTrainer(BaseTrainer):
         self.best_metric = -1.0
         self.best_epoch = 0
         self.patience_counter = 0
+        self.last_epoch = 0
+        self.last_parts = None  # last epoch's scores, set by _save_last_epoch
 
     def train(self):
         """Standard epoch loop: forward, InfoNCE loss, backward, eval."""
@@ -107,6 +110,7 @@ class ColorCLIPTrainer(BaseTrainer):
               f"on {self.device}...")
 
         for epoch in range(1, self.epochs + 1):
+            self.last_epoch = epoch
             train_loss, train_components = self._train_epoch(epoch)
             clip_metrics = self.evaluate()
 
@@ -143,12 +147,14 @@ class ColorCLIPTrainer(BaseTrainer):
             if self._check_early_stopping(clip_metrics, epoch):
                 print(f"\nEarly stopping at epoch {epoch} "
                       f"(best {self.es_metric}: {self.best_metric:.4f})")
+                self._save_last_epoch()
                 self._restore_best()
                 break
         else:
             # Ran every epoch. With early stopping on, the best epoch may be an earlier
             # one, so restore it as the early-stopped path does; otherwise keep the last.
             if self.patience > 0:
+                self._save_last_epoch()
                 self._restore_best()
             else:
                 self.best_epoch = self.epochs
@@ -158,11 +164,13 @@ class ColorCLIPTrainer(BaseTrainer):
         # Raw scores are only needed when we are asked to persist them.
         needs_logits = bool(self.config["training"].get("save_ranking")
                             or self.config["training"].get("save_scores"))
-        final_metrics = self.evaluate(max_samples=len(self.test_loader.dataset),
-                                      return_logits=needs_logits)
-        self._print_metrics(final_metrics)
-        self._save_eval_dump(final_metrics)
-        self._save_final_metrics(final_metrics)
+        parts = self.evaluate_parts(return_logits=needs_logits)
+        self._print_metrics(parts["clean"])
+        print(f"R@1 on the test parts: select {parts['select']['r_at_1']:.4f} | "
+              f"A {parts['a']['r_at_1']:.4f} | B {parts['b']['r_at_1']:.4f} | "
+              f"A+B {parts['clean']['r_at_1']:.4f}")
+        self._save_eval_dump(parts["whole"])
+        self._save_final_metrics(parts, self.last_parts)
 
     def evaluate(self, data_loader=None, max_samples=None, return_logits=False) -> dict:
         """
@@ -175,7 +183,34 @@ class ColorCLIPTrainer(BaseTrainer):
             max_samples = self.max_eval_samples
 
         class_text_embeds = self._compute_class_prototypes()
+        color_embeds, labels = self._encode_colors(data_loader, max_samples)
+        return compute_clip_class_metrics(color_embeds, class_text_embeds, labels,
+                                          return_logits=return_logits)
 
+    def evaluate_parts(self, return_logits=False) -> dict:
+        """
+        Score the current weights on the whole test set and on each part of the
+        evaluation rule (data_prep.test_parts, research_plan.md note 10): `select`
+        (the first max_eval_samples rows, which chose the epoch), `a`, `b`, and
+        `clean` = a + b. Only `whole` carries the raw score matrix.
+        """
+        class_text_embeds = self._compute_class_prototypes()
+        color_embeds, labels = self._encode_colors(self.test_loader, len(self.test_loader.dataset))
+        parts = test_parts(labels.numpy(), self.max_eval_samples)
+        parts["clean"] = np.sort(np.concatenate([parts["a"], parts["b"]]))
+        # Rows per similarity chunk, sized so a chunk's (rows, K) scores stay near 200 MB:
+        # 50,000 rows at 5,363 names took a rescoring job past 3.6 GB. Results do not change.
+        chunk = min(50_000, max(1_000, 50_000_000 // len(class_text_embeds)))
+        out = {"whole": compute_clip_class_metrics(color_embeds, class_text_embeds, labels,
+                                                   return_logits=return_logits, chunk_size=chunk)}
+        for name, rows in parts.items():
+            idx = torch.from_numpy(rows)
+            out[name] = compute_clip_class_metrics(color_embeds[idx], class_text_embeds, labels[idx],
+                                                   chunk_size=chunk)
+        return out
+
+    def _encode_colors(self, data_loader, max_samples):
+        """Colour embeddings and labels of the first max_samples rows, in loader order."""
         self.model.eval()
         all_color, all_labels = [], []
         collected = 0
@@ -190,11 +225,7 @@ class ColorCLIPTrainer(BaseTrainer):
                 if collected >= max_samples:
                     break
 
-        color_embeds = torch.cat(all_color)[:max_samples]
-        labels = torch.cat(all_labels)[:max_samples]
-
-        return compute_clip_class_metrics(color_embeds, class_text_embeds, labels,
-                                          return_logits=return_logits)
+        return torch.cat(all_color)[:max_samples], torch.cat(all_labels)[:max_samples]
 
     def save_model(self):
         """Save model weights and config."""
@@ -224,17 +255,33 @@ class ColorCLIPTrainer(BaseTrainer):
         "youdens_j", "youdens_j_at_5", "mean_log_odds",
     )
 
-    def _save_final_metrics(self, metrics: dict):
-        """
-        Save the final evaluation (best checkpoint, whole test set) to
-        final_metrics.json next to metrics.csv. metrics.csv's last row is the last
-        training epoch on max_eval_samples test samples, not this. `epoch` is the
-        epoch the evaluated checkpoint comes from.
-        """
+    def _scalars(self, metrics: dict) -> dict:
         out = {k: float(metrics[k]) for k in self._FINAL_METRIC_KEYS}
         out["n_samples"] = int(len(metrics["ranks"]))
+        return out
+
+    def _save_final_metrics(self, parts: dict, last_parts: dict = None):
+        """
+        Save the final evaluation of the best checkpoint to final_metrics.json next to
+        metrics.csv (metrics.csv's rows are training epochs on the `select` rows only).
+
+        Top level: the clean rows (A + B), which never chose anything. `parts` holds
+        select (kept for checks; never reported), a, b and clean. The whole test set is
+        not saved: it mixes the rows that chose the epoch into the score. `epoch` is the
+        epoch the evaluated checkpoint comes from. With the last epoch's scores (`last_parts`, new runs
+        only), `last` holds them and `last_beats_best` is True when the last epoch
+        beats the best on A by more than twice the R@1 sampling error.
+        """
+        out = self._scalars(parts["clean"])
         out["temperature"] = self.loss_fn.log_temperature.exp().item()
         out["epoch"] = self.best_epoch
+        out["parts"] = {name: self._scalars(parts[name]) for name in ("select", "a", "b", "clean")}
+        if last_parts is not None:
+            out["last"] = {"epoch": self.last_epoch,
+                           "parts": {name: self._scalars(last_parts[name]) for name in ("a", "b", "clean")}}
+            p, n = parts["a"]["r_at_1"], len(parts["a"]["ranks"])
+            margin = 2 * np.sqrt(p * (1 - p) / max(n, 1))
+            out["last_beats_best"] = bool(last_parts["a"]["r_at_1"] > p + margin)
         with open(os.path.join(self.logger.log_dir, "final_metrics.json"), "w") as f:
             json.dump(out, f, indent=2)
 
@@ -351,8 +398,18 @@ class ColorCLIPTrainer(BaseTrainer):
         self.patience_counter += 1
         return self.patience_counter >= self.patience
 
+    def _save_last_epoch(self):
+        """Save the last epoch's weights and scores before the best checkpoint replaces them."""
+        torch.save({
+            "model_state_dict": self.model.state_dict(),
+            "loss_fn_state_dict": self.loss_fn.state_dict(),
+            "config": self.config,
+            "epoch": self.last_epoch,
+        }, os.path.join(self.models_dir, "last_color_clip_model.pth"))
+        self.last_parts = self.evaluate_parts()
+
     def _restore_best(self):
-        """Load best checkpoint if it exists."""
+        """Load the best checkpoint if it exists."""
         path = os.path.join(self.models_dir, "best_color_clip_model.pth")
         if os.path.exists(path):
             ckpt = torch.load(path, map_location=self.device)
