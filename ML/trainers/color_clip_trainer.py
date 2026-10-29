@@ -62,7 +62,7 @@ class ColorCLIPTrainer(BaseTrainer):
         }
         # The pixel tolerance is measured on the 0-255 RGB grid, recovered from the
         # model input; OKLCH input would need the raw RGB carried through the loader.
-        if loss_kwargs["t2c_eps"] and self.config["data"].get("color_space", "oklch") != "rgb":
+        if loss_kwargs["t2c_eps"] and self.config["data"].get("color_space", "rgb") != "rgb":
             raise ValueError("t2c_eps needs data.color_space = 'rgb'")
 
         # Prototype mode classifies each color against the K fixed class

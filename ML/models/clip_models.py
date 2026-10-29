@@ -7,7 +7,8 @@ import torch.nn.functional as F
 
 class ColorEncoder(nn.Module):
     """
-    MLP color encoder: maps OKLCH coordinates to the joint embedding space.
+    MLP color encoder: maps colours (RGB by default, OKLCH if
+    data.color_space says so) to the joint embedding space.
     Hidden layers are configurable via `hidden_dims`.
     """
 
@@ -121,7 +122,7 @@ class ColorCLIPModel(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
-            colors: (N, 3) normalized OKLCH tensors
+            colors: (N, 3) normalized colour tensors (RGB by default, or OKLCH)
             bow:    (N, vocab_size) multi-hot BoW tensors
 
         Returns:

@@ -94,7 +94,7 @@ def main():
     train_freq = np.bincount(np.asarray(bundle["y_train"]), minlength=k).astype(np.float64)
     log_prior = torch.tensor(np.log(train_freq / train_freq.sum()), dtype=torch.float32)
 
-    color_space = config["data"].get("color_space", "oklch")
+    color_space = config["data"].get("color_space", "rgb")
     print(f"Building {args.grid}^3 = {args.grid**3:,} grid points ({color_space} input)...")
     grid_input = torch.FloatTensor(build_grid(args.grid, color_space))
 

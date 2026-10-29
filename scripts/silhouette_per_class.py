@@ -138,7 +138,7 @@ def main():
     # Feed the model the space it was trained on. bundle["X_test"] is always raw
     # normalized RGB; DataLoader applies the conversion only inside the CLIP loaders,
     # so hardcoding OKLCH here silently scores an RGB-trained model on wrong inputs.
-    color_space = config["data"].get("color_space", "oklch")
+    color_space = config["data"].get("color_space", "rgb")
     model_input = torch.FloatTensor(
         (X_oklch if color_space == "oklch" else X_test).astype(np.float32))
     print(f"Encoding {len(X_test):,} samples (model input: {color_space})...")

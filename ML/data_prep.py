@@ -26,21 +26,22 @@ class ColorDataset(Dataset):
 
 
 class ColorTextDataset(Dataset):
-    """Dataset for ColorCLIP: returns (oklch_color, bow_vector, label) tuples.
+    """Dataset for ColorCLIP: returns (color, bow_vector, label) tuples.
     
     Stores a compact (K, vocab_size) class-level BoW lookup table instead of
     duplicating BoW vectors across all N samples. The per-sample BoW vector
     is retrieved via label index at batch time.
     """
 
-    def __init__(self, oklch_colors: np.ndarray, class_bow: np.ndarray, labels: np.ndarray):
+    def __init__(self, colors: np.ndarray, class_bow: np.ndarray, labels: np.ndarray):
         """
         Args:
-            oklch_colors: (N, 3) normalized float array — model input
+            colors: (N, 3) normalized float array — model input (RGB in [0, 1] by
+                default; OKLCH when data.color_space = "oklch")
             class_bow: (K, vocab_size) multi-hot float array — one row per class
             labels: (N,) integer class indices mapping samples to class_bow rows
         """
-        self.colors = torch.FloatTensor(oklch_colors)
+        self.colors = torch.FloatTensor(colors)
         self.class_bow = torch.FloatTensor(class_bow)
         self.labels = torch.LongTensor(labels)
 
@@ -366,7 +367,7 @@ class DataLoader:
         vocab_size = self.data_config.get("vocab_size", 100)
         if vocab_size == "auto":
             vocab_size = None  # BagOfWordsEmbedder will use all unique tokens
-        color_space = self.data_config.get("color_space", "oklch")
+        color_space = self.data_config.get("color_space", "rgb")
 
         if color_space == "oklch":
             # X is normalized [0, 1] — scale back to [0, 255] for rgb_to_oklch
