@@ -61,3 +61,4 @@ cluster/experiments.txt
 data_mining/blacklists/
 data_mining/fuzzy_matching/
 data_mining/output/
+historical_conversations/
