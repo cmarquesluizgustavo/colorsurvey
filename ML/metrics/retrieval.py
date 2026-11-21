@@ -1,4 +1,6 @@
 """Metrics for multiclass classification and CLIP-style retrieval."""
+from typing import Optional
+
 import numpy as np
 import torch
 from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_fscore_support
@@ -52,7 +54,8 @@ def youdens_j_at_k(topk_preds: torch.Tensor, labels: torch.Tensor, k: int, num_c
     fpr = false_pos / (n - counts).clamp(min=1)
 
     per_class_j = sensitivity - fpr
-    return per_class_j, per_class_j.mean().item()
+    # Mean over classes that have samples: an absent class has no sensitivity to measure.
+    return per_class_j, per_class_j[counts > 0].mean().item()
 
 
 def compute_metrics(y_true, y_pred, num_classes, per_class=False):
@@ -90,6 +93,7 @@ def compute_clip_class_metrics(
     labels: torch.Tensor,
     return_logits: bool = False,
     chunk_size: int = 50_000,
+    temperature: Optional[float] = None,
 ) -> dict:
     """
     Compute ColorCLIP retrieval metrics via class-level evaluation.
@@ -107,19 +111,26 @@ def compute_clip_class_metrics(
             raw scores/rankings need it.
         chunk_size:        rows per similarity chunk (memory/speed knob only;
             results are identical for any value)
+        temperature:       optional positive softmax temperature. When provided,
+            also computes held-out cross-entropy (log_loss and per_class_log_loss)
+            inside the similarity chunk loop.
 
     Returns:
         dict with scalar metrics, per-class vectors, and per-sample vectors:
         - r_at_1, r_at_5, r_at_10, median_rank, avg_rank: scalar retrieval metrics
         - class_oriented_r_at_1/5/10: scalar, each class weighted equally
           regardless of size (mean of per-class R@k, not per-sample R@k)
+        - per_class_counts: (K,) test sample counts per class
+        - per_class_r_at_1: (K,) top-1 recall per class (NaN where count == 0)
         - per_class_rank:   (K,) mean rank per class (label_encoder order)
         - per_class_cosine: (K,) mean cosine similarity per class
         - mrr:              scalar Mean Reciprocal Rank
         - youdens_j:        scalar Youden's J for top-1 predictions
-        - youdens_j_at_5:    scalar Youden's J@5 (a "hit" counts anywhere in the top-5)
+        - youdens_j_at_5:   scalar Youden's J@5 (a "hit" counts anywhere in the top-5)
         - per_class_j_at_1/5: (K,) per-class Youden's J@1 / @5
         - mean_log_odds:    scalar mean log-odds ratio (0 = perfect)
+        - log_loss:         scalar mean negative log-likelihood (only with temperature)
+        - per_class_log_loss: (K,) mean NLL per class, NaN where absent (only with temperature)
         - ranks:            (N,) 1-based rank of correct class per sample
         - top1_preds:       (N,) predicted class index per sample
         - top10_preds:      (N, min(10, K)) top predicted class indices, best first
@@ -127,6 +138,9 @@ def compute_clip_class_metrics(
         - logits:           (N, K) raw similarity scores — only when
           return_logits=True
     """
+    if temperature is not None and temperature <= 0:
+        raise ValueError(f"temperature must be positive, got {temperature}")
+
     k = class_text_embeds.shape[0]
     n = color_embeds.shape[0]
 
@@ -134,6 +148,7 @@ def compute_clip_class_metrics(
     # (N, K) similarity matrix is built one row-chunk at a time and discarded.
     # Materializing it in full is what breaks at large K (~13 GB at K=5363).
     gt_chunks, rank_chunks, top1_chunks, topk_chunks, odds_chunks = [], [], [], [], []
+    nll_chunks = []
     logit_chunks = []
     for i in range(0, n, chunk_size):
         chunk_logits = color_embeds[i:i + chunk_size] @ class_text_embeds.t()
@@ -154,6 +169,14 @@ def compute_clip_class_metrics(
         if return_logits:
             logit_chunks.append(chunk_logits)
 
+        if temperature is not None:
+            if return_logits:
+                scaled = chunk_logits / temperature
+                nll_chunks.append(scaled.logsumexp(dim=1) - scaled[rows, chunk_labels])
+            else:
+                chunk_logits.div_(temperature)
+                nll_chunks.append(chunk_logits.logsumexp(dim=1) - (gt / temperature))
+
     gt_scores = torch.cat(gt_chunks)                # (N,)
     ranks = torch.cat(rank_chunks)                  # (N,)
     top1_preds = torch.cat(top1_chunks)             # (N,)
@@ -165,8 +188,9 @@ def compute_clip_class_metrics(
     j = youdens_j(labels.numpy(), top1_preds.numpy(), k)
 
     # Per-class aggregation: mean rank and mean cosine similarity
-    counts = torch.zeros(k).scatter_add_(0, labels, torch.ones_like(labels, dtype=torch.float))
-    counts.clamp_(min=1)
+    raw_counts = torch.zeros(k).scatter_add_(0, labels, torch.ones_like(labels, dtype=torch.float))
+    present = raw_counts > 0  # a subset of the test set can miss rare classes entirely
+    counts = raw_counts.clamp(min=1)
     per_class_rank = torch.zeros(k).scatter_add_(0, labels, ranks.float()) / counts
     per_class_cosine = torch.zeros(k).scatter_add_(0, labels, gt_scores) / counts
 
@@ -174,10 +198,13 @@ def compute_clip_class_metrics(
     # rare class counts as much as a frequent one (unlike r_at_k above, which
     # is dominated by whichever classes have the most samples).
     class_oriented = {}
+    per_class_r_at_1 = None
     for k_at in (1, 5, 10):
         hits = (ranks <= k_at).float()
         per_class_hits = torch.zeros(k).scatter_add_(0, labels, hits) / counts
-        class_oriented[f"class_oriented_r_at_{k_at}"] = per_class_hits.mean().item()
+        class_oriented[f"class_oriented_r_at_{k_at}"] = per_class_hits[present].mean().item()
+        if k_at == 1:
+            per_class_r_at_1 = torch.where(present, per_class_hits, torch.nan)
 
     per_class_j_at_1, _ = youdens_j_at_k(top10_preds, labels, 1, k)
     per_class_j_at_5, j_at_5_mean = youdens_j_at_k(top10_preds, labels, 5, k)
@@ -194,6 +221,8 @@ def compute_clip_class_metrics(
         "youdens_j_at_5": j_at_5_mean,
         "per_class_j_at_1": per_class_j_at_1,
         "per_class_j_at_5": per_class_j_at_5,
+        "per_class_counts": raw_counts.long(),
+        "per_class_r_at_1": per_class_r_at_1,
         "mean_log_odds": mean_log_odds,
         "per_class_rank": per_class_rank,
         "per_class_cosine": per_class_cosine,
@@ -202,6 +231,11 @@ def compute_clip_class_metrics(
         "top10_preds": top10_preds,
         "labels": labels,
     }
+    if temperature is not None:
+        nll = torch.cat(nll_chunks)
+        per_class_nll = torch.zeros(k).scatter_add_(0, labels, nll) / counts
+        result["log_loss"] = nll.mean().item()
+        result["per_class_log_loss"] = torch.where(present, per_class_nll, torch.nan)
     if return_logits:
         result["logits"] = torch.cat(logit_chunks)
     return result
