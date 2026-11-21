@@ -1,0 +1,27 @@
+####################
+# HTCondor submission for cluster/rescore_job.sh: backfill final_metrics.json
+# and per_name.csv for saved checkpoints without running on the submit host.
+#
+# Queue file rescore_stage/tasks.txt columns: <job_id>, <mode>, <mem_mb>
+# where <mode> is "crowd" or "nocrowd".
+####################
+
+Executable = cluster/rescore_job.sh
+Arguments = $(job_id) $(mode)
+Universe = vanilla
+
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+transfer_input_files = rescore_stage/code.tar.gz,rescore_stage/rescore_$(job_id).tar.gz,mainsurvey.csv
+transfer_output_files = rescore_out_$(job_id).tar.gz
+transfer_output_remaps = "rescore_out_$(job_id).tar.gz = rescore_stage/out/rescore_out_$(job_id).tar.gz"
+
+request_cpus = 1
+request_memory = $(mem)
+request_disk = 1 GB
+
+Log = logs/rescore/$(job_id).log
+Output = logs/rescore/$(job_id).out
+Error = logs/rescore/$(job_id).err
+
+Queue job_id, mode, mem from rescore_stage/tasks.txt
