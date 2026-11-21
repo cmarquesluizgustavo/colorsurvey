@@ -3,7 +3,7 @@ from typing import Optional
 
 import numpy as np
 import torch
-from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_fscore_support
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
 
 def youdens_j(y_true, y_pred, num_classes):
@@ -16,8 +16,11 @@ def youdens_j(y_true, y_pred, num_classes):
     Returns:
         float: Youden's J in [0, 1], where 0=random, 1=perfect
     """
-    cm = confusion_matrix(y_true, y_pred, labels=range(num_classes))
-    per_class_recall = np.diag(cm) / (cm.sum(axis=1) + 1e-10)
+    y_true_arr = np.asarray(y_true, dtype=np.int64)
+    y_pred_arr = np.asarray(y_pred, dtype=np.int64)
+    totals = np.bincount(y_true_arr, minlength=num_classes)
+    hits = np.bincount(y_true_arr[y_true_arr == y_pred_arr], minlength=num_classes)
+    per_class_recall = hits / (totals + 1e-10)
     balanced_acc = per_class_recall.mean()
     j = (num_classes * balanced_acc - 1) / (num_classes - 1) if num_classes > 1 else balanced_acc
     return j
