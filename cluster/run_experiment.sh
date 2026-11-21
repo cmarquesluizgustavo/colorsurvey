@@ -6,17 +6,17 @@ set -e
 
 # HTCondor flattens directory structure - recreate it
 echo "Recreating ML/ directory structure on $(hostname)..."
-mkdir -p ML/models ML/trainers ML/losses
+mkdir -p ML/models ML/trainers ML/losses ML/metrics
 
 # Move Python files back to ML/ directory
 mv data_prep.py ML/ 2>/dev/null || true
 mv main.py ML/ 2>/dev/null || true
-mv metrics.py ML/ 2>/dev/null || true
 mv utils.py ML/ 2>/dev/null || true
 mv embeddings.py ML/ 2>/dev/null || true
 mv models/*.py ML/models/ 2>/dev/null || true
 mv trainers/*.py ML/trainers/ 2>/dev/null || true
 mv losses/*.py ML/losses/ 2>/dev/null || true
+mv metrics/*.py ML/metrics/ 2>/dev/null || true
 mv __pycache__ ML/ 2>/dev/null || true
 
 # CSV is transferred as mainsurvey.csv — no rename needed

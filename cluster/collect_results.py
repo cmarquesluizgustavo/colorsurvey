@@ -46,12 +46,19 @@ CLIP_FIELDNAMES = [
     'MRR', 'Mean_Log_Odds', 'CLIP_Youden_J', 'Youden_J_at_5',
     'Temperature', 'Final_Cycle', 'Timestamp', 'Status', 'Metrics_Source', 'Metrics_Epoch',
     'R_at_1_A', 'R_at_1_B', 'Last_Beats_Best',
+    'Log_Loss', 'Silhouette', 'Silhouette_Per_Class',
+    'Colour_To_Name_Diff', 'Colour_To_Name_Halves', 'Top_Name_Match',
+    'Name_To_Colour_Diff', 'Name_To_Colour_Halves', 'Centre_Distance', 'Width_Ratio',
 ]
 
-# Columns that sort ascending (grouping); everything else sorts descending (metrics)
-ASCENDING_COLUMNS = {'Experiment', 'Colors', 'Subset', 'Loss_Type', 'Embed_Dim',
-                     'Final_Cycle', 'Timestamp', 'Status', 'Metrics_Source',
-                     'Metrics_Epoch', 'Last_Beats_Best'}
+# Columns that sort ascending (grouping and lower-is-better metrics); everything else sorts descending
+ASCENDING_COLUMNS = {
+    'Experiment', 'Colors', 'Subset', 'Loss_Type', 'Embed_Dim',
+    'Final_Cycle', 'Timestamp', 'Status', 'Metrics_Source',
+    'Metrics_Epoch', 'Last_Beats_Best',
+    'Log_Loss', 'Colour_To_Name_Diff', 'Colour_To_Name_Halves',
+    'Name_To_Colour_Diff', 'Name_To_Colour_Halves', 'Centre_Distance',
+}
 
 LOSS_TYPE_MAP = {'mask': 'masked', 'orig': 'original', 'supc': 'supcon',
                  'proto': 'prototype'}
@@ -286,24 +293,34 @@ def _build_clip_entry(exp_dir, last_row, models_dir, final_metrics=None):
         'R_at_1_A':       parts.get('a', {}).get('r_at_1', ''),
         'R_at_1_B':       parts.get('b', {}).get('r_at_1', ''),
         'Last_Beats_Best': final_metrics.get('last_beats_best', '') if final_metrics else '',
+        'Log_Loss':              _optional_float(metric_row, 'log_loss'),
+        'Silhouette':            _optional_float(metric_row, 'silhouette'),
+        'Silhouette_Per_Class':  _optional_float(metric_row, 'silhouette_per_class'),
+        'Colour_To_Name_Diff':   _optional_float(metric_row, 'colour_to_name_diff'),
+        'Colour_To_Name_Halves': _optional_float(metric_row, 'colour_to_name_halves'),
+        'Top_Name_Match':        _optional_float(metric_row, 'top_name_match'),
+        'Name_To_Colour_Diff':   _optional_float(metric_row, 'name_to_colour_diff'),
+        'Name_To_Colour_Halves': _optional_float(metric_row, 'name_to_colour_halves'),
+        'Centre_Distance':       _optional_float(metric_row, 'centre_distance'),
+        'Width_Ratio':           _optional_float(metric_row, 'width_ratio'),
     }
 
 
 def _multi_sort_key(entry, sort_cols):
     """Return a tuple for multi-column sorting.
 
-    Grouping columns (in ASCENDING_COLUMNS) sort ascending.
-    Metric columns sort descending (negated).
+    Grouping and lower-is-better columns (in ASCENDING_COLUMNS) sort ascending.
+    Higher-is-better columns sort descending (negated). Empty cells sort last.
     """
     keys = []
     for col in sort_cols:
         val = entry.get(col, '')
-        if col in ASCENDING_COLUMNS:
-            # ascending: str/int as-is
-            keys.append((val if not isinstance(val, str) else val.lower()))
+        if val == '' or val is None:
+            keys.append((1, 0))
+        elif col in ASCENDING_COLUMNS:
+            keys.append((0, val if not isinstance(val, str) else val.lower()))
         else:
-            # descending: negate numeric, or invert string
-            keys.append(-val if isinstance(val, (int, float)) else val)
+            keys.append((0, -val if isinstance(val, (int, float)) else val))
     return tuple(keys)
 
 
@@ -533,6 +550,9 @@ def main():
             final_src = os.path.join(run_dir, 'final_metrics.json')
             if os.path.exists(final_src):
                 shutil.copy2(final_src, f'{results_dir}/metrics/{exp_name}_final_metrics.json')
+            per_name_src = os.path.join(run_dir, 'per_name.csv')
+            if os.path.exists(per_name_src):
+                shutil.copy2(per_name_src, f'{results_dir}/metrics/{exp_name}_per_name.csv')
             for tb_file in glob.glob(f'{run_dir}/events.out.tfevents.*'):
                 tb_dst = f'{results_dir}/tensorboards/{exp_name}'
                 os.makedirs(tb_dst, exist_ok=True)
