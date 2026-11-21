@@ -50,6 +50,7 @@ logs/
 .cache/
 .specstory/
 *csv
+*.npz
 # Experiment rounds and local runs, except each round's generate_configs.py: its docstring
 # is the record of what the round was for and why.
 experiments/*/*
