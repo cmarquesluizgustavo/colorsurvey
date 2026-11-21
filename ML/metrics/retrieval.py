@@ -57,8 +57,7 @@ def youdens_j_at_k(topk_preds: torch.Tensor, labels: torch.Tensor, k: int, num_c
     fpr = false_pos / (n - counts).clamp(min=1)
 
     per_class_j = sensitivity - fpr
-    # Mean over classes that have samples: an absent class has no sensitivity to measure.
-    return per_class_j, per_class_j[counts > 0].mean().item()
+    return per_class_j, per_class_j.mean().item()
 
 
 def compute_metrics(y_true, y_pred, num_classes, per_class=False):
@@ -205,7 +204,7 @@ def compute_clip_class_metrics(
     for k_at in (1, 5, 10):
         hits = (ranks <= k_at).float()
         per_class_hits = torch.zeros(k).scatter_add_(0, labels, hits) / counts
-        class_oriented[f"class_oriented_r_at_{k_at}"] = per_class_hits[present].mean().item()
+        class_oriented[f"class_oriented_r_at_{k_at}"] = per_class_hits.mean().item()
         if k_at == 1:
             per_class_r_at_1 = torch.where(present, per_class_hits, torch.nan)
 
