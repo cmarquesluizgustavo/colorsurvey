@@ -1,0 +1,33 @@
+####################
+# HTCondor submission for cluster/people_vs_model_job.sh: annexes/people_vs_model/build.py
+# score, one job per model in people_vs_model/runs.txt (`<round>, <run>`).
+#
+# On your machine:
+#   python3 annexes/people_vs_model/build.py pack people_vs_model
+#   then copy people_vs_model/ and the two cluster/people_vs_model* files to the cluster
+# On the cluster, from the project root:
+#   mkdir -p people_vs_model/out logs/people_vs_model
+#   condor_submit cluster/people_vs_model.sub
+# Afterwards, copy people_vs_model/out/*.npz to annexes/people_vs_model/out/ and run
+# build.py report.
+####################
+
+Executable = cluster/people_vs_model_job.sh
+Arguments = $(round) $(run)
+Universe = vanilla
+
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+transfer_input_files = people_vs_model/in.tar.gz,mainsurvey.csv
+transfer_output_files = $(run).npz
+transfer_output_remaps = "$(run).npz = people_vs_model/out/$(run).npz"
+
+request_cpus = 1
+request_memory = 1900
+request_disk = 1 GB
+
+Log = logs/people_vs_model/$(run).log
+Output = logs/people_vs_model/$(run).out
+Error = logs/people_vs_model/$(run).err
+
+Queue round, run from people_vs_model/runs.txt
