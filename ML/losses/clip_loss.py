@@ -30,6 +30,11 @@ class BaseCLIPLoss(nn.Module):
         self.log_temperature = nn.Parameter(torch.tensor(temperature).log())
         self.t2c_eps = t2c_eps
 
+    @property
+    def temperature(self) -> float:
+        """Clamped scalar temperature in [0.01, 100.0], matching compute_logits()."""
+        return float(self.log_temperature.double().exp().clamp(min=0.01, max=100.0).item())
+
     def compute_logits(self, color_embeds: torch.Tensor, text_embeds: torch.Tensor) -> torch.Tensor:
         """
         Args:

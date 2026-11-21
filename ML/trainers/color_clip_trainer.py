@@ -100,7 +100,8 @@ class ColorCLIPTrainer(BaseTrainer):
         self.patience = es_cfg.get("patience", 0)       # 0 = disabled
         self.min_delta = es_cfg.get("min_delta", 0.0)
         self.es_metric = es_cfg.get("metric", "r_at_1")
-        self.best_metric = -1.0
+        self.es_minimize = self.es_metric in self._MINIMIZE_ES_METRICS
+        self.best_metric = float("inf") if self.es_minimize else -1.0
         self.best_epoch = 0
         self.patience_counter = 0
         self.last_epoch = 0
@@ -117,7 +118,7 @@ class ColorCLIPTrainer(BaseTrainer):
             clip_metrics = self.evaluate()
 
             r1 = clip_metrics["r_at_1"]
-            temp = self.loss_fn.log_temperature.exp().item()
+            temp = self.loss_fn.temperature
             print(
                 f"Epoch {epoch:3d}/{self.epochs} | loss: {train_loss:.4f} | "
                 f"R@1: {r1:.4f}  MRR: {clip_metrics['mrr']:.4f}  "
@@ -195,7 +196,7 @@ class ColorCLIPTrainer(BaseTrainer):
 
         class_text_embeds = self._compute_class_prototypes()
         color_embeds, labels = self._encode_colors(data_loader, max_samples)
-        temp = float(self.loss_fn.log_temperature.exp().item())
+        temp = self.loss_fn.temperature
         return compute_clip_class_metrics(color_embeds, class_text_embeds, labels,
                                           return_logits=return_logits, temperature=temp)
 
@@ -214,7 +215,7 @@ class ColorCLIPTrainer(BaseTrainer):
         """
         class_text_embeds = self._compute_class_prototypes()
         color_embeds, labels = self._encode_colors(self.test_loader, len(self.test_loader.dataset))
-        temp = float(self.loss_fn.log_temperature.exp().item())
+        temp = self.loss_fn.temperature
         parts = test_parts(labels.numpy(), self.max_eval_samples)
         parts["clean"] = np.sort(np.concatenate([parts["a"], parts["b"]]))
         # Rows per similarity chunk, sized so a chunk's (rows, K) scores stay near 40 MB.
@@ -295,6 +296,8 @@ class ColorCLIPTrainer(BaseTrainer):
         counts = torch.bincount(y_train, minlength=k).float().clamp(min=1)
         return counts.sum() / (k * counts)
 
+    _MINIMIZE_ES_METRICS = {"log_loss", "median_rank", "avg_rank", "mean_log_odds"}
+
     # Scalar metrics of the final evaluation that collect_results.py reads.
     _FINAL_METRIC_KEYS = (
         "r_at_1", "r_at_5", "r_at_10", "median_rank", "avg_rank", "mrr",
@@ -327,7 +330,7 @@ class ColorCLIPTrainer(BaseTrainer):
         beats the best on A by more than twice the R@1 sampling error.
         """
         out = self._scalars(parts["clean"])
-        out["temperature"] = self.loss_fn.log_temperature.exp().item()
+        out["temperature"] = self.loss_fn.temperature
         out["epoch"] = self.best_epoch
         post = parts.get("post_training") or {}
         for key in self._POST_SCALAR_KEYS:
@@ -482,7 +485,12 @@ class ColorCLIPTrainer(BaseTrainer):
             return False
 
         val = metrics[self.es_metric]
-        if val > self.best_metric + self.min_delta:
+        improved = (
+            val < self.best_metric - self.min_delta
+            if self.es_minimize
+            else val > self.best_metric + self.min_delta
+        )
+        if improved:
             self.best_metric = val
             self.best_epoch = epoch
             self.patience_counter = 0

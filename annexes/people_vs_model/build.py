@@ -82,7 +82,7 @@ def score(rnd, run):
     tr.model.load_state_dict(ckpt["model_state_dict"])
     tr.loss_fn.load_state_dict(ckpt["loss_fn_state_dict"])
     text = tr._compute_class_prototypes()
-    temp = tr.loss_fn.log_temperature.exp().item()
+    temp = tr.loss_fn.temperature
     names = list(bundle["label_encoder"].classes_)
     K = len(names)
 
@@ -115,101 +115,108 @@ def score(rnd, run):
             return (uniq_embeds @ text[ks].T).numpy() / temp
 
     chunks = [list(range(s, min(s + CHUNK, K))) for s in range(0, K, CHUNK)]
-    lse = np.full(U, -np.inf, np.float32)
-    top_v, top_k = np.full(U, -np.inf, np.float32), np.zeros(U, np.int64)
-    for ks in chunks:
-        lg = logits(ks)
-        lse = np.logaddexp(lse, np.logaddexp.reduce(lg, axis=1))
-        j = lg.argmax(1)
-        win = lg[np.arange(U), j] > top_v
-        top_v[win], top_k[win] = lg[np.arange(U), j][win], np.array(ks)[j[win]]
-
     out = {"answers": np.bincount(y, minlength=K), "auc": np.zeros(K)}
 
-    for tol in TOLS:
-        tot = _box_sum(cube(cnt), tol)
-        tot_a = _box_sum(cube(cnt_a), tol)
-        tot_b = _box_sum(cube(cnt_b), tol)
-        near = GRID[tot[GRID] >= MIN_ANSWERS]
-        t, ta, tb = tot[near], tot_a[near], tot_b[near]
-        del tot, tot_a, tot_b
-        both = (ta > 0) & (tb > 0)
-
-        diff_top = np.zeros(len(near), np.float32)
-        best_a = np.full(len(near), -1.0, np.float32)
-        best_b = np.full(len(near), -1.0, np.float32)
-        top_a = np.zeros(len(near), np.int16)
-        top_b = np.zeros(len(near), np.int16)
-
-        is_extra = tol in EXTRA_TOLS
-        if is_extra:
-            diff_model = np.zeros(len(near), np.float32)
-            diff_halves = np.zeros(len(near), np.float32)
-            best_m = np.full(len(near), -1.0, np.float32)
-            best_p = np.full(len(near), -1.0, np.float32)
-            top_m = np.zeros(len(near), np.int16)
-            top_p = np.zeros(len(near), np.int16)
-            per = {f: np.zeros(K) for f in ("name_model", "name_halves", "width_model", "width_people")}
-            if tol == TOLS[0]:
-                out["centre_model"] = np.zeros((K, 3))
-                out["centre_people"] = np.zeros((K, 3))
-
+    if K > 96:
         for ks in chunks:
             lg = logits(ks)
             for j, k in enumerate(ks):
-                rows = y == k
+                out["auc"][k] = roc_auc_score(y == k, lg[inv, j])
+            print(f"  AUC: names {ks[0]}-{ks[-1]} done", flush=True)
+    else:
+        lse = np.full(U, -np.inf, np.float32)
+        top_v, top_k = np.full(U, -np.inf, np.float32), np.zeros(U, np.int64)
+        for ks in chunks:
+            lg = logits(ks)
+            lse = np.logaddexp(lse, np.logaddexp.reduce(lg, axis=1))
+            j = lg.argmax(1)
+            win = lg[np.arange(U), j] > top_v
+            top_v[win], top_k[win] = lg[np.arange(U), j][win], np.array(ks)[j[win]]
+
+        for tol in TOLS:
+            tot = _box_sum(cube(cnt), tol)
+            tot_a = _box_sum(cube(cnt_a), tol)
+            tot_b = _box_sum(cube(cnt_b), tol)
+            near = GRID[tot[GRID] >= MIN_ANSWERS]
+            t, ta, tb = tot[near], tot_a[near], tot_b[near]
+            del tot, tot_a, tot_b
+            both = (ta > 0) & (tb > 0)
+
+            diff_top = np.zeros(len(near), np.float32)
+            best_a = np.full(len(near), -1.0, np.float32)
+            best_b = np.full(len(near), -1.0, np.float32)
+            top_a = np.zeros(len(near), np.int16)
+            top_b = np.zeros(len(near), np.int16)
+
+            is_extra = tol in EXTRA_TOLS
+            if is_extra:
+                diff_model = np.zeros(len(near), np.float32)
+                diff_halves = np.zeros(len(near), np.float32)
+                best_m = np.full(len(near), -1.0, np.float32)
+                best_p = np.full(len(near), -1.0, np.float32)
+                top_m = np.zeros(len(near), np.int16)
+                top_p = np.zeros(len(near), np.int16)
+                per = {f: np.zeros(K) for f in ("name_model", "name_halves", "width_model", "width_people")}
                 if tol == TOLS[0]:
-                    out["auc"][k] = roc_auc_score(rows, lg[inv, j])
-                people = _box_sum(cube(np.bincount(inv[rows], minlength=U).astype(np.float32)), tol)
-                a = _box_sum(cube(np.bincount(inv[rows & half], minlength=U).astype(np.float32)), tol)
-                b_cube = np.maximum(people - a, 0.0)
-                shares_people = people[near] / t
-                shares_a = a[near] / np.maximum(ta, 1)
-                shares_b = b_cube[near] / np.maximum(tb, 1)
+                    out["centre_model"] = np.zeros((K, 3))
+                    out["centre_people"] = np.zeros((K, 3))
 
-                diff_top += np.abs(_box_sum(cube(cnt * (top_k == k)), tol)[near] / t - shares_people) / 2
-                win_a = shares_a > best_a
-                best_a[win_a], top_a[win_a] = shares_a[win_a], k
-                win_b = shares_b > best_b
-                best_b[win_b], top_b[win_b] = shares_b[win_b], k
-
-                if is_extra:
-                    shares_model = _box_sum(cube(cnt * np.exp(lg[:, j] - lse)), tol)[near] / t
-                    diff_model += np.abs(shares_model - shares_people) / 2
-                    diff_halves += np.abs(shares_a - shares_b) / 2
-                    win_m = shares_model > best_m
-                    best_m[win_m], top_m[win_m] = shares_model[win_m], k
-                    win_p = shares_people > best_p
-                    best_p[win_p], top_p[win_p] = shares_people[win_p], k
-
-                    q = np.log(cnt) + lg[:, j]
-                    q = np.exp(q - q.max())
-                    q /= q.sum()
-                    model_dist = _box_sum(cube(q), tol)
-                    model_dist /= model_dist.sum()
-                    b_norm = b_cube / b_cube.sum()
-                    a_norm = a / a.sum()
-                    per["name_halves"][k] = tv(a_norm, b_norm)
-                    people_norm = people / people.sum()
-                    per["name_model"][k] = tv(model_dist, people_norm)
-                    per["width_model"][k], per["width_people"][k] = _width_90(model_dist), _width_90(people_norm)
+            for ks in chunks:
+                lg = logits(ks)
+                for j, k in enumerate(ks):
+                    rows = y == k
                     if tol == TOLS[0]:
-                        out["centre_model"][k] = q @ rgb
-                        out["centre_people"][k] = X[rows].mean(0)
-            print(f"  tolerance {tol}: names {ks[0]}-{ks[-1]} done", flush=True)
+                        out["auc"][k] = roc_auc_score(rows, lg[inv, j])
+                    people = _box_sum(cube(np.bincount(inv[rows], minlength=U).astype(np.float32)), tol)
+                    a = _box_sum(cube(np.bincount(inv[rows & half], minlength=U).astype(np.float32)), tol)
+                    b_cube = np.maximum(people - a, 0.0)
+                    shares_people = people[near] / t
+                    shares_a = a[near] / np.maximum(ta, 1)
+                    shares_b = b_cube[near] / np.maximum(tb, 1)
 
-        out[f"colour_model_top_{tol}"] = diff_top.mean()
-        out[f"top_match_halves_{tol}"] = (top_a == top_b)[both].mean()
-        out[f"colours_scored_{tol}"] = len(near)
-        if is_extra:
-            out[f"colour_model_{tol}"] = diff_model.mean()
-            out[f"colour_halves_{tol}"] = diff_halves[both].mean()
-            out[f"top_match_{tol}"] = (top_m == top_p).mean()
-            for f, v in per.items():
-                out[f"{f}_{tol}"] = v
+                    diff_top += np.abs(_box_sum(cube(cnt * (top_k == k)), tol)[near] / t - shares_people) / 2
+                    win_a = shares_a > best_a
+                    best_a[win_a], top_a[win_a] = shares_a[win_a], k
+                    win_b = shares_b > best_b
+                    best_b[win_b], top_b[win_b] = shares_b[win_b], k
 
-    if "centre_model" in out:
-        out["centre"] = np.linalg.norm(out["centre_model"] - out["centre_people"], axis=1)
+                    if is_extra:
+                        shares_model = _box_sum(cube(cnt * np.exp(lg[:, j] - lse)), tol)[near] / t
+                        diff_model += np.abs(shares_model - shares_people) / 2
+                        diff_halves += np.abs(shares_a - shares_b) / 2
+                        win_m = shares_model > best_m
+                        best_m[win_m], top_m[win_m] = shares_model[win_m], k
+                        win_p = shares_people > best_p
+                        best_p[win_p], top_p[win_p] = shares_people[win_p], k
+
+                        q = np.log(cnt) + lg[:, j]
+                        q = np.exp(q - q.max())
+                        q /= q.sum()
+                        model_dist = _box_sum(cube(q), tol)
+                        model_dist /= model_dist.sum()
+                        b_norm = b_cube / b_cube.sum()
+                        a_norm = a / a.sum()
+                        per["name_halves"][k] = tv(a_norm, b_norm)
+                        people_norm = people / people.sum()
+                        per["name_model"][k] = tv(model_dist, people_norm)
+                        per["width_model"][k], per["width_people"][k] = _width_90(model_dist), _width_90(people_norm)
+                        if tol == TOLS[0]:
+                            out["centre_model"][k] = q @ rgb
+                            out["centre_people"][k] = X[rows].mean(0)
+                print(f"  tolerance {tol}: names {ks[0]}-{ks[-1]} done", flush=True)
+
+            out[f"colour_model_top_{tol}"] = diff_top.mean()
+            out[f"top_match_halves_{tol}"] = (top_a == top_b)[both].mean()
+            out[f"colours_scored_{tol}"] = len(near)
+            if is_extra:
+                out[f"colour_model_{tol}"] = diff_model.mean()
+                out[f"colour_halves_{tol}"] = diff_halves[both].mean()
+                out[f"top_match_{tol}"] = (top_m == top_p).mean()
+                for f, v in per.items():
+                    out[f"{f}_{tol}"] = v
+
+        if "centre_model" in out:
+            out["centre"] = np.linalg.norm(out["centre_model"] - out["centre_people"], axis=1)
     tc = cfg["training"]
     np.savez_compressed(
         f"{run}.npz", round=rnd, run=run, names=np.array(names), loss=tc["loss_type"],
@@ -252,7 +259,8 @@ def report():
         if tbl is None or run not in tbl.index or not os.path.exists(pn_path) or d is None:
             continue
         main_row = tbl.loc[run]
-        if pd.isna(main_row.get("Colour_To_Name_Diff")):
+        has_crowd = pd.notna(main_row.get("Colour_To_Name_Diff"))
+        if len(d["names"]) <= 96 and not has_crowd:
             continue
 
         pn = pd.read_csv(pn_path).set_index("Name")
@@ -279,6 +287,12 @@ def report():
             "width_ratio_8": tol8_width,
         })
 
+        def _opt_round(val, ndigits=4):
+            if val is None:
+                return None
+            v = float(val)
+            return None if np.isnan(v) else round(v, ndigits)
+
         order = np.argsort(-answers)
         for rank, k in enumerate(order, 1):
             per_name_rows.append({
@@ -287,15 +301,18 @@ def report():
                 "rank": rank,
                 "name": names[k],
                 "answers": int(answers[k]),
-                "name_to_colour_difference": round(float(tol8_name_model[k]), 4),
-                "people_halves": round(float(tol8_name_halves[k]), 4),
-                "centre_distance": round(float(tol8_centre[k]), 4),
-                "width_model_over_people": round(float(tol8_width[k]), 4),
+                "name_to_colour_difference": _opt_round(tol8_name_model[k]),
+                "people_halves": _opt_round(tol8_name_halves[k]),
+                "centre_distance": _opt_round(tol8_centre[k]),
+                "width_model_over_people": _opt_round(tol8_width[k]),
                 "auc": round(float(d["auc"][k]), 4),
             })
 
-        for tol in TOLS:
-            if tol == PLOT_TOL:
+        for tol in (TOLS if has_crowd else (None,)):
+            if tol is None:
+                nm = nh = None
+                c2n_diff = c2n_halves = top_match = n2c_diff = n2c_halves = width_ratio = centre_dist = None
+            elif tol == PLOT_TOL:
                 nm, nh = tol8_name_model, tol8_name_halves
                 c2n_diff = float(main_row["Colour_To_Name_Diff"])
                 c2n_halves = float(main_row["Colour_To_Name_Halves"])
@@ -324,30 +341,32 @@ def report():
                 "R_at_1": float(main_row["R_at_1"]),
                 "temperature": round(float(main_row["Temperature"]), 4),
                 "tolerance": tol,
-                "colour_to_name_difference": round(c2n_diff, 4),
-                "colour_to_name_difference_top_answer": round(float(d[f"colour_model_top_{tol}"]), 4),
-                "colour_to_name_people_halves": round(c2n_halves, 4),
-                "top_name_match": round(top_match, 4),
-                "top_name_match_people_halves": round(float(d[f"top_match_halves_{tol}"]), 4),
-                "name_to_colour_difference": round(n2c_diff, 4),
-                "name_to_colour_people_halves": round(n2c_halves, 4),
+                "colour_to_name_difference": _opt_round(c2n_diff),
+                "colour_to_name_difference_top_answer": _opt_round(d[f"colour_model_top_{tol}"]) if tol is not None else None,
+                "colour_to_name_people_halves": _opt_round(c2n_halves),
+                "top_name_match": _opt_round(top_match),
+                "top_name_match_people_halves": _opt_round(d[f"top_match_halves_{tol}"]) if tol is not None else None,
+                "name_to_colour_difference": _opt_round(n2c_diff),
+                "name_to_colour_people_halves": _opt_round(n2c_halves),
                 "common_names": int(common.sum()),
-                "name_to_colour_difference_common": round(float(nm[common].mean()), 4),
-                "name_to_colour_people_halves_common": round(float(nh[common].mean()), 4),
-                "name_to_colour_difference_rare": round(float(nm[~common].mean()), 4) if (~common).any() else None,
-                "name_to_colour_people_halves_rare": round(float(nh[~common].mean()), 4) if (~common).any() else None,
-                "width_model_over_people": round(width_ratio, 3),
-                "centre_distance": round(centre_dist, 2),
+                "name_to_colour_difference_common": _opt_round(nm[common].mean()) if nm is not None else None,
+                "name_to_colour_people_halves_common": _opt_round(nh[common].mean()) if nh is not None else None,
+                "name_to_colour_difference_rare": _opt_round(nm[~common].mean()) if nm is not None and (~common).any() else None,
+                "name_to_colour_people_halves_rare": _opt_round(nh[~common].mean()) if nh is not None and (~common).any() else None,
+                "width_model_over_people": _opt_round(width_ratio, 3),
+                "centre_distance": _opt_round(centre_dist, 2),
                 "auc": round(float(d["auc"].mean()), 4),
             })
 
     if not rows:
-        raise RuntimeError("No runs had both main crowd results and supplementary .npz outputs.")
+        raise RuntimeError("No runs had matching main experiment results and supplementary .npz outputs.")
 
-    pd.DataFrame(rows).sort_values(
+    summary_df = pd.DataFrame(rows).sort_values(
         ["names", "round", "loss", "t2c_weight", "batch_size", "tolerance"],
         ascending=[False, True, True, True, True, True],
-    ).to_csv(os.path.join(HERE, "summary.csv"), index=False)
+    )
+    summary_df["tolerance"] = summary_df["tolerance"].astype("Int64")
+    summary_df.to_csv(os.path.join(HERE, "summary.csv"), index=False)
 
     pd.DataFrame(per_name_rows).sort_values(
         ["names", "run", "rank"], ascending=[False, True, True],
@@ -356,7 +375,7 @@ def report():
     shown = [d for d in plot_runs if d["round"] not in ("14th", "20th", "21st")
              or (d["batch_size"] == 2048 and d["t2c_weight"] in (0, 10))]
     shown.sort(key=lambda d: (-len(d["names"]), label(d)))
-    sizes = sorted({len(d["names"]) for d in plot_runs}, reverse=True)
+    sizes = sorted({len(d["names"]) for d in shown}, reverse=True)
 
     def _per_name_panel(d):
         return {
@@ -374,53 +393,57 @@ def report():
         ("auc", "AUC"),
     ]
     bar_sizes = [k for k in sizes if k <= 96]
-    fig, axes = plt.subplots(len(panels) * len(bar_sizes), 1,
-                             figsize=(22, 3 * len(panels) * len(bar_sizes)))
-    for s, k in enumerate(bar_sizes):
-        group = [d for d in shown if len(d["names"]) == k]
-        order = np.argsort(-group[0]["answers"])
-        x = np.arange(k)
-        w = 0.8 / len(group)
-        for i, d in enumerate(group):
-            v = _per_name_panel(d)
-            for j, (f, _) in enumerate(panels):
-                axes[s * len(panels) + j].bar(x + (i - (len(group) - 1) / 2) * w, v[f][order], w, label=label(d))
-        axes[s * len(panels)].scatter(x, _per_name_panel(group[0])["people_halves"][order], color="k",
-                                      marker="_", s=80, zorder=3, label="people halves")
-        axes[s * len(panels) + 2].axhline(1, color="k", lw=0.8)
-        aucs = np.concatenate([d["auc"] for d in group])
-        axes[s * len(panels) + 3].set_ylim(aucs.min() - 0.01, 1)
-        for j, (_, title) in enumerate(panels):
-            ax = axes[s * len(panels) + j]
-            ax.set_ylabel(title, fontsize=8)
-            ax.set_xlim(-0.6, k - 0.4)
-            ax.set_xticks(x, group[0]["names"][order], rotation=90, fontsize=6 if k > 20 else 8)
-        axes[s * len(panels)].set_title(
-            f"{k} names, tolerance {PLOT_TOL}: names from most answered (left) to least answered (right)",
-            fontsize=10)
-        axes[s * len(panels)].legend(fontsize=7, ncol=4)
-    fig.tight_layout()
-    fig.savefig(os.path.join(HERE, "per_name.png"), dpi=110)
+    if bar_sizes:
+        fig, axes = plt.subplots(len(panels) * len(bar_sizes), 1,
+                                 figsize=(22, 3 * len(panels) * len(bar_sizes)))
+        for s, k in enumerate(bar_sizes):
+            group = [d for d in shown if len(d["names"]) == k]
+            order = np.argsort(-group[0]["answers"])
+            x = np.arange(k)
+            w = 0.8 / len(group)
+            for i, d in enumerate(group):
+                v = _per_name_panel(d)
+                for j, (f, _) in enumerate(panels):
+                    axes[s * len(panels) + j].bar(x + (i - (len(group) - 1) / 2) * w, v[f][order], w, label=label(d))
+            axes[s * len(panels)].scatter(x, _per_name_panel(group[0])["people_halves"][order], color="k",
+                                          marker="_", s=80, zorder=3, label="people halves")
+            axes[s * len(panels) + 2].axhline(1, color="k", lw=0.8)
+            aucs = np.concatenate([d["auc"] for d in group])
+            axes[s * len(panels) + 3].set_ylim(aucs.min() - 0.01, 1)
+            for j, (_, title) in enumerate(panels):
+                ax = axes[s * len(panels) + j]
+                ax.set_ylabel(title, fontsize=8)
+                ax.set_xlim(-0.6, k - 0.4)
+                ax.set_xticks(x, group[0]["names"][order], rotation=90, fontsize=6 if k > 20 else 8)
+            axes[s * len(panels)].set_title(
+                f"{k} names, tolerance {PLOT_TOL}: names from most answered (left) to least answered (right)",
+                fontsize=10)
+            axes[s * len(panels)].legend(fontsize=7, ncol=4)
+        fig.tight_layout()
+        fig.savefig(os.path.join(HERE, "per_name.png"), dpi=110)
+        plt.close(fig)
 
-    fig, axes = plt.subplots(len(sizes), 1, figsize=(11, 4 * len(sizes)), squeeze=False)
-    for ax, k in zip(axes[:, 0], sizes):
-        group = [d for d in shown if len(d["names"]) == k]
-        order = np.argsort(-group[0]["answers"])
-        for d in group:
-            ax.plot(d["auc"][order], marker=".", lw=1, label=label(d))
-        ax.set_ylabel("AUC")
-        ax.set_title(f"{k} names: name to colour AUC, names from most to least answered", fontsize=10)
-        if k <= 20:
-            ax.set_xticks(range(k), group[0]["names"][order], rotation=45, ha="right", fontsize=8)
-        ax.legend(fontsize=7)
-    fig.tight_layout()
-    fig.savefig(os.path.join(HERE, "auc.png"), dpi=120)
+    if sizes:
+        fig, axes = plt.subplots(len(sizes), 1, figsize=(11, 4 * len(sizes)), squeeze=False)
+        for ax, k in zip(axes[:, 0], sizes):
+            group = [d for d in shown if len(d["names"]) == k]
+            order = np.argsort(-group[0]["answers"])
+            for d in group:
+                ax.plot(d["auc"][order], marker=".", lw=1, label=label(d))
+            ax.set_ylabel("AUC")
+            ax.set_title(f"{k} names: name to colour AUC, names from most to least answered", fontsize=10)
+            if k <= 20:
+                ax.set_xticks(range(k), group[0]["names"][order], rotation=45, ha="right", fontsize=8)
+            ax.legend(fontsize=7)
+        fig.tight_layout()
+        fig.savefig(os.path.join(HERE, "auc.png"), dpi=120)
+        plt.close(fig)
 
 
 def pack(out):
     os.chdir(ROOT)
     os.makedirs(out, exist_ok=True)
-    active_runs = [(rnd, run) for rnd, run in RUNS if os.path.exists(checkpoint(rnd, run)) and int(json.load(open(f"experiments/{rnd}/configs/{run}.json"))["data"]["top_n_colors"]) <= 96]
+    active_runs = [(rnd, run) for rnd, run in RUNS if os.path.exists(checkpoint(rnd, run))]
     with tarfile.open(os.path.join(out, "in.tar.gz"), "w:gz") as tar:
         tar.add("ML", filter=lambda t: None if "__pycache__" in t.name else t)
         tar.add("annexes/people_vs_model/build.py")

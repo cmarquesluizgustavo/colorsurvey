@@ -315,7 +315,7 @@ def _multi_sort_key(entry, sort_cols):
     keys = []
     for col in sort_cols:
         val = entry.get(col, '')
-        if val == '' or val is None:
+        if val == '' or val is None or (isinstance(val, float) and math.isnan(val)):
             keys.append((1, 0))
         elif col in ASCENDING_COLUMNS:
             keys.append((0, val if not isinstance(val, str) else val.lower()))

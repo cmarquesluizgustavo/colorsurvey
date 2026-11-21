@@ -44,6 +44,44 @@ def simplified_silhouette_samples(
     return out.numpy()
 
 
+def _stratified_subsample(labels_np: np.ndarray, subsample: int, seed: int) -> np.ndarray:
+    """Return stratified row indices, falling back when classes are singletons or remainders are small."""
+    counts = np.bincount(labels_np)
+    present_ids = np.flatnonzero(counts > 0)
+    counts_p = counts[present_ids]
+    n = len(labels_np)
+    if counts_p.min() >= 2 and n - subsample >= len(present_ids):
+        idx, _ = train_test_split(
+            np.arange(n),
+            train_size=subsample,
+            stratify=labels_np,
+            random_state=seed,
+        )
+        return idx
+
+    rng = np.random.default_rng(seed)
+    if subsample < len(present_ids):
+        return rng.choice(n, size=subsample, replace=False)
+
+    quotas = np.maximum(np.floor(counts_p * (subsample / n)).astype(int), 1)
+    while quotas.sum() > subsample:
+        reducible = np.flatnonzero(quotas > 1)
+        quotas[reducible[np.argmax(quotas[reducible])]] -= 1
+    while quotas.sum() < subsample:
+        room = counts_p - quotas
+        avail = np.flatnonzero(room > 0)
+        frac = (counts_p[avail] * (subsample / n)) - quotas[avail]
+        take = min(int(subsample - quotas.sum()), len(avail))
+        order = avail[np.argsort(-frac, kind="stable")[:take]]
+        quotas[order] += 1
+
+    chosen = [
+        rng.choice(np.flatnonzero(labels_np == cls_id), size=q, replace=False)
+        for cls_id, q in zip(present_ids, quotas)
+    ]
+    return np.concatenate(chosen)
+
+
 def compute_silhouette_metrics(
     embeddings: torch.Tensor,
     labels: torch.Tensor,
@@ -54,19 +92,30 @@ def compute_silhouette_metrics(
 ) -> dict:
     """Compute overall, per-class-mean, and per-name simplified silhouette."""
     labels_np = np.asarray(labels, dtype=np.int64)
-    centroids = compute_centroids(embeddings, labels_np, num_classes)
-    if len(labels_np) > subsample:
-        idx, _ = train_test_split(
-            np.arange(len(labels_np)),
-            train_size=subsample,
-            stratify=labels_np,
-            random_state=seed,
-        )
+    present_all = np.bincount(labels_np, minlength=num_classes) > 0
+    present_ids = np.flatnonzero(present_all)
+    if len(present_ids) < 2:
+        return {
+            "silhouette": float("nan"),
+            "silhouette_per_class": float("nan"),
+            "per_class_silhouette": np.full(num_classes, np.nan),
+        }
+
+    if len(present_ids) == num_classes:
+        mapped_labels = labels_np
     else:
-        idx = np.arange(len(labels_np))
+        remap = np.full(num_classes, -1, dtype=np.int64)
+        remap[present_ids] = np.arange(len(present_ids), dtype=np.int64)
+        mapped_labels = remap[labels_np]
+
+    centroids = compute_centroids(embeddings, mapped_labels, len(present_ids))
+    if len(mapped_labels) > subsample:
+        idx = _stratified_subsample(mapped_labels, subsample, seed)
+    else:
+        idx = np.arange(len(mapped_labels))
 
     scores = simplified_silhouette_samples(
-        embeddings[idx], labels_np[idx], centroids, chunk_size=chunk_size
+        embeddings[idx], mapped_labels[idx], centroids, chunk_size=chunk_size
     )
     y_sub = labels_np[idx]
     weights = np.bincount(y_sub, minlength=num_classes).astype(float)
