@@ -1,3 +1,5 @@
+import csv
+import gc
 import json
 import os
 import time
@@ -11,7 +13,7 @@ from ML.losses.clip_loss import (
     OriginalCLIPLoss, MaskedCLIPLoss, SupConCLIPLoss, PrototypeCLIPLoss,
 )
 from ML.data_prep import test_parts
-from ML.metrics import compute_clip_class_metrics
+from ML.metrics import compute_clip_class_metrics, compute_post_training_metrics
 from ML.utils import get_device
 
 LOSS_REGISTRY = {
@@ -121,7 +123,8 @@ class ColorCLIPTrainer(BaseTrainer):
                 f"R@1: {r1:.4f}  MRR: {clip_metrics['mrr']:.4f}  "
                 f"R@5: {clip_metrics['r_at_5']:.4f}  "
                 f"R@10: {clip_metrics['r_at_10']:.4f}  "
-                f"Med.Rank: {clip_metrics['median_rank']:.1f}  τ: {temp:.4f}"
+                f"Med.Rank: {clip_metrics['median_rank']:.1f}  "
+                f"Log-loss: {clip_metrics['log_loss']:.4f}  τ: {temp:.4f}"
             )
 
             self.logger.log_metrics(epoch, epoch, {
@@ -141,6 +144,7 @@ class ColorCLIPTrainer(BaseTrainer):
                 "youdens_j": clip_metrics["youdens_j"],
                 "youdens_j_at_5": clip_metrics["youdens_j_at_5"],
                 "mean_log_odds": clip_metrics["mean_log_odds"],
+                "log_loss": clip_metrics["log_loss"],
                 "temperature": temp,
             })
 
@@ -161,11 +165,18 @@ class ColorCLIPTrainer(BaseTrainer):
                 self.save_model()
 
         print("\nFinal evaluation:")
+        self.train_loader = None
+        self.optimizer = None
+        if isinstance(self.data_bundle, dict):
+            self.data_bundle.pop("train_loader", None)
+            self.data_bundle.pop("X_train", None)
+            self.data_bundle.pop("y_train", None)
+        gc.collect()
         # Raw scores are only needed when we are asked to persist them.
         needs_logits = bool(self.config["training"].get("save_ranking")
                             or self.config["training"].get("save_scores"))
         parts = self.evaluate_parts(return_logits=needs_logits)
-        self._print_metrics(parts["clean"])
+        self._print_metrics(parts["clean"], parts.get("post_training"))
         print(f"R@1 on the test parts: select {parts['select']['r_at_1']:.4f} | "
               f"A {parts['a']['r_at_1']:.4f} | B {parts['b']['r_at_1']:.4f} | "
               f"A+B {parts['clean']['r_at_1']:.4f}")
@@ -184,10 +195,17 @@ class ColorCLIPTrainer(BaseTrainer):
 
         class_text_embeds = self._compute_class_prototypes()
         color_embeds, labels = self._encode_colors(data_loader, max_samples)
+        temp = float(self.loss_fn.log_temperature.exp().item())
         return compute_clip_class_metrics(color_embeds, class_text_embeds, labels,
-                                          return_logits=return_logits)
+                                          return_logits=return_logits, temperature=temp)
 
-    def evaluate_parts(self, return_logits=False) -> dict:
+    def evaluate_parts(
+        self,
+        return_logits=False,
+        compute_silhouette=None,
+        compute_crowd=None,
+        include_whole=True,
+    ) -> dict:
         """
         Score the current weights on the whole test set and on each part of the
         evaluation rule (data_prep.test_parts, research_plan.md note 10): `select`
@@ -196,17 +214,46 @@ class ColorCLIPTrainer(BaseTrainer):
         """
         class_text_embeds = self._compute_class_prototypes()
         color_embeds, labels = self._encode_colors(self.test_loader, len(self.test_loader.dataset))
+        temp = float(self.loss_fn.log_temperature.exp().item())
         parts = test_parts(labels.numpy(), self.max_eval_samples)
         parts["clean"] = np.sort(np.concatenate([parts["a"], parts["b"]]))
-        # Rows per similarity chunk, sized so a chunk's (rows, K) scores stay near 200 MB:
-        # 50,000 rows at 5,363 names took a rescoring job past 3.6 GB. Results do not change.
-        chunk = min(50_000, max(1_000, 50_000_000 // len(class_text_embeds)))
-        out = {"whole": compute_clip_class_metrics(color_embeds, class_text_embeds, labels,
-                                                   return_logits=return_logits, chunk_size=chunk)}
+        # Rows per similarity chunk, sized so a chunk's (rows, K) scores stay near 40 MB.
+        k = len(class_text_embeds)
+        chunk = min(50_000, max(1_000, 10_000_000 // k))
+        out = {}
+        if include_whole or return_logits:
+            out["whole"] = compute_clip_class_metrics(
+                color_embeds, class_text_embeds, labels,
+                return_logits=return_logits, chunk_size=chunk, temperature=temp,
+            )
         for name, rows in parts.items():
             idx = torch.from_numpy(rows)
             out[name] = compute_clip_class_metrics(color_embeds[idx], class_text_embeds, labels[idx],
-                                                   chunk_size=chunk)
+                                                   chunk_size=chunk, temperature=temp)
+
+        train_cfg = self.config.get("training", {})
+        sil_on = train_cfg.get("post_training_silhouette", k <= 797) if compute_silhouette is None else bool(compute_silhouette)
+        crowd_on = train_cfg.get("post_training_crowd", k <= 96) if compute_crowd is None else bool(compute_crowd)
+        if sil_on or crowd_on:
+            clean_rows = parts["clean"]
+            clean_idx = torch.from_numpy(clean_rows)
+            part_a_mask = np.isin(clean_rows, parts["a"])
+            part_b_mask = ~part_a_mask
+            rgb_clean = np.asarray(self.data_bundle["X_test"])[clean_rows]
+            clean_embeds = color_embeds[clean_idx]
+            clean_labels = labels[clean_idx]
+            del color_embeds, labels
+            out["post_training"] = compute_post_training_metrics(
+                color_embeds=clean_embeds,
+                class_text_embeds=class_text_embeds,
+                labels=clean_labels,
+                rgb_01=rgb_clean,
+                temperature=temp,
+                part_a_mask=part_a_mask,
+                part_b_mask=part_b_mask,
+                compute_silhouette=sil_on,
+                compute_crowd=crowd_on,
+            )
         return out
 
     def _encode_colors(self, data_loader, max_samples):
@@ -254,16 +301,23 @@ class ColorCLIPTrainer(BaseTrainer):
         "class_oriented_r_at_1", "class_oriented_r_at_5", "class_oriented_r_at_10",
         "youdens_j", "youdens_j_at_5", "mean_log_odds",
     )
+    _POST_SCALAR_KEYS = (
+        "silhouette", "silhouette_per_class",
+        "colour_to_name_diff", "colour_to_name_halves", "top_name_match",
+        "name_to_colour_diff", "name_to_colour_halves", "centre_distance", "width_ratio",
+    )
 
     def _scalars(self, metrics: dict) -> dict:
         out = {k: float(metrics[k]) for k in self._FINAL_METRIC_KEYS}
+        if "log_loss" in metrics:
+            out["log_loss"] = float(metrics["log_loss"])
         out["n_samples"] = int(len(metrics["ranks"]))
         return out
 
     def _save_final_metrics(self, parts: dict, last_parts: dict = None):
         """
-        Save the final evaluation of the best checkpoint to final_metrics.json next to
-        metrics.csv (metrics.csv's rows are training epochs on the `select` rows only).
+        Save the final evaluation of the best checkpoint to final_metrics.json and per_name.csv
+        next to metrics.csv (metrics.csv's rows are training epochs on the `select` rows only).
 
         Top level: the clean rows (A + B), which never chose anything. `parts` holds
         select (kept for checks; never reported), a, b and clean. The whole test set is
@@ -275,6 +329,10 @@ class ColorCLIPTrainer(BaseTrainer):
         out = self._scalars(parts["clean"])
         out["temperature"] = self.loss_fn.log_temperature.exp().item()
         out["epoch"] = self.best_epoch
+        post = parts.get("post_training") or {}
+        for key in self._POST_SCALAR_KEYS:
+            if key in post:
+                out[key] = float(post[key])
         out["parts"] = {name: self._scalars(parts[name]) for name in ("select", "a", "b", "clean")}
         if last_parts is not None:
             out["last"] = {"epoch": self.last_epoch,
@@ -284,6 +342,49 @@ class ColorCLIPTrainer(BaseTrainer):
             out["last_beats_best"] = bool(last_parts["a"]["r_at_1"] > p + margin)
         with open(os.path.join(self.logger.log_dir, "final_metrics.json"), "w") as f:
             json.dump(out, f, indent=2)
+        self._save_per_name_csv(parts)
+
+    def _save_per_name_csv(self, parts: dict):
+        """Write per-name clean A + B metrics to per_name.csv in the run directory."""
+        clean = parts["clean"]
+        post = parts.get("post_training") or {}
+        names = list(self.label_encoder.classes_)
+        counts = clean["per_class_counts"].numpy()
+        r1 = clean["per_class_r_at_1"].numpy()
+        log_loss = clean["per_class_log_loss"].numpy() if "per_class_log_loss" in clean else None
+        sil = post.get("per_class_silhouette")
+        n2c = post.get("per_class_name_to_colour_diff")
+        n2c_halves = post.get("per_class_name_to_colour_halves")
+        centre = post.get("per_class_centre_distance")
+        width = post.get("per_class_width_ratio")
+
+        def _fmt(arr, idx):
+            if arr is None:
+                return ""
+            val = float(arr[idx])
+            return "" if np.isnan(val) else f"{val:.6f}"
+
+        order = sorted(range(len(names)), key=lambda i: (-int(counts[i]), names[i]))
+        out_path = os.path.join(self.logger.log_dir, "per_name.csv")
+        fieldnames = [
+            "Name", "Count", "R_at_1", "Log_Loss", "Silhouette",
+            "Name_To_Colour_Diff", "Name_To_Colour_Halves", "Centre_Distance", "Width_Ratio",
+        ]
+        with open(out_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for idx in order:
+                writer.writerow({
+                    "Name": names[idx],
+                    "Count": int(counts[idx]),
+                    "R_at_1": _fmt(r1, idx),
+                    "Log_Loss": _fmt(log_loss, idx),
+                    "Silhouette": _fmt(sil, idx),
+                    "Name_To_Colour_Diff": _fmt(n2c, idx),
+                    "Name_To_Colour_Halves": _fmt(n2c_halves, idx),
+                    "Centre_Distance": _fmt(centre, idx),
+                    "Width_Ratio": _fmt(width, idx),
+                })
 
     def _save_eval_dump(self, metrics: dict):
         """
@@ -406,7 +507,7 @@ class ColorCLIPTrainer(BaseTrainer):
             "config": self.config,
             "epoch": self.last_epoch,
         }, os.path.join(self.models_dir, "last_color_clip_model.pth"))
-        self.last_parts = self.evaluate_parts()
+        self.last_parts = self.evaluate_parts(compute_silhouette=False, compute_crowd=False)
 
     def _restore_best(self):
         """Load the best checkpoint if it exists."""
@@ -419,20 +520,38 @@ class ColorCLIPTrainer(BaseTrainer):
         self.save_model()
 
     @staticmethod
-    def _print_metrics(metrics: dict):
+    def _print_metrics(metrics: dict, post: dict = None):
         pcr = metrics["per_class_rank"]
         pcc = metrics["per_class_cosine"]
-        print(
+        lines = [
             f"  R@1: {metrics['r_at_1']:.4f}  MRR: {metrics['mrr']:.4f}  "
             f"R@5: {metrics['r_at_5']:.4f}  "
-            f"R@10: {metrics['r_at_10']:.4f}  Med.Rank: {metrics['median_rank']:.1f}\n"
+            f"R@10: {metrics['r_at_10']:.4f}  Med.Rank: {metrics['median_rank']:.1f}",
             f"  Youden's J: {metrics['youdens_j']:.4f}  "
-            f"Log-odds: {metrics['mean_log_odds']:.4f}\n"
+            f"Log-odds: {metrics['mean_log_odds']:.4f}"
+            + (f"  Log-loss: {metrics['log_loss']:.4f}" if "log_loss" in metrics else ""),
             f"  Per-class rank  — mean: {pcr.mean():.1f}  "
-            f"min: {pcr.min():.1f}  max: {pcr.max():.1f}\n"
+            f"min: {pcr.min():.1f}  max: {pcr.max():.1f}",
             f"  Per-class cosine — mean: {pcc.mean():.4f}  "
-            f"min: {pcc.min():.4f}  max: {pcc.max():.4f}"
-        )
+            f"min: {pcc.min():.4f}  max: {pcc.max():.4f}",
+        ]
+        if post:
+            if "silhouette" in post:
+                lines.append(
+                    f"  Silhouette: {post['silhouette']:+.4f}  "
+                    f"per-class: {post['silhouette_per_class']:+.4f}"
+                )
+            if "colour_to_name_diff" in post:
+                lines.append(
+                    f"  Crowd (tol=8): c2n {post['colour_to_name_diff']:.4f} "
+                    f"(halves {post['colour_to_name_halves']:.4f})  "
+                    f"top-match {post['top_name_match']:.4f}  "
+                    f"n2c {post['name_to_colour_diff']:.4f} "
+                    f"(halves {post['name_to_colour_halves']:.4f})  "
+                    f"centre {post['centre_distance']:.2f}  "
+                    f"width {post['width_ratio']:.3f}"
+                )
+        print("\n".join(lines))
 
 
 # Self-register with the factory
