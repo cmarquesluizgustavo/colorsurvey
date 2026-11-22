@@ -205,11 +205,14 @@ def load_results_table() -> pd.DataFrame:
                 if not lm:
                     continue
                 loss_short = lm.group(1)
+            ckpt = ("best_color_clip_model.pth"
+                    if (ROOT / "experiments" / rnd / "models" / exp / "best_color_clip_model.pth").exists()
+                    else "color_clip_model.pth")
             rows.append(dict(
                 round=rnd,
                 colors=k,
                 exp=exp,
-                path=f"experiments/{rnd}/models/{exp}/best_color_clip_model.pth",
+                path=f"experiments/{rnd}/models/{exp}/{ckpt}",
                 loss=loss_short,
                 dim=m["embed_dim"],
                 ch="x".join(map(str, m.get("color_hidden_dims") or [])) or "0",
@@ -233,7 +236,7 @@ def load_results_table() -> pd.DataFrame:
 # ---------------------------------------------------------------- analyses
 
 HP = ["lr", "temp", "t2c", "eps", "bs", "epochs", "patience", "seed"]
-VARIANT = r"_lr\d|_temp|_t2c|_bs\d|balsamp|_cw|learnproto|_sgd"
+VARIANT = r"_lr\d|_temp|_t2c|_c2t|_bs\d|balsamp|_cw|learnproto|_sgd"
 
 
 def default_grid(cp):
