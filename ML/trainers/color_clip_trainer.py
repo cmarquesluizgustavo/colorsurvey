@@ -73,6 +73,7 @@ class ColorCLIPTrainer(BaseTrainer):
             class_bow = self.bow_embedder.transform(self.label_encoder.classes_)
             self.class_bow_tensor = torch.FloatTensor(class_bow).to(self.device)
             loss_kwargs["t2c_weight"] = self.config["training"].get("t2c_weight", 1.0)
+            loss_kwargs["c2t_weight"] = self.config["training"].get("c2t_weight", 1.0)
             if self.config["training"].get("class_weights"):
                 if self.config["data"].get("sampler") == "class_balanced":
                     print("⚠️  class_weights AND class_balanced sampler are both on "
@@ -82,13 +83,21 @@ class ColorCLIPTrainer(BaseTrainer):
         loss_cls = LOSS_REGISTRY[self.loss_type]
         self.loss_fn = loss_cls(**loss_kwargs).to(self.device)
 
-        # Single optimizer for model + learnable temperature
+        # Single optimizer for model + learnable temperature. AdamW by default; "sgd"
+        # (with momentum) drops AdamW's per-parameter rescaling of the step.
         lr = self.config["training"]["lr"]
-        self.optimizer = optim.AdamW(
-            list(self.model.parameters()) + list(self.loss_fn.parameters()),
-            lr=lr,
-            weight_decay=self.config["training"].get("weight_decay", 0.01),
-        )
+        params = list(self.model.parameters()) + list(self.loss_fn.parameters())
+        weight_decay = self.config["training"].get("weight_decay", 0.01)
+        optimizer = self.config["training"].get("optimizer", "adamw")
+        if optimizer == "adamw":
+            self.optimizer = optim.AdamW(params, lr=lr, weight_decay=weight_decay)
+        elif optimizer == "sgd":
+            self.optimizer = optim.SGD(
+                params, lr=lr, weight_decay=weight_decay,
+                momentum=self.config["training"].get("momentum", 0.9),
+            )
+        else:
+            raise ValueError(f"Unknown optimizer: {optimizer}")
 
         self.epochs = self.config["training"]["epochs"]
         self.max_eval_samples = self.config["training"].get("max_eval_samples", 5000)

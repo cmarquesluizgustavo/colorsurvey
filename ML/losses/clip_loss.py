@@ -1,3 +1,5 @@
+import contextlib
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -256,18 +258,24 @@ class PrototypeCLIPLoss(BaseCLIPLoss):
             frequent classes from dominating the gradient on a long tail.
             None (default) = unweighted.
         t2c_weight: relative weight of the (hard, one-to-many) text->color term.
-            Loss = (c2t + t2c_weight * t2c) / (1 + t2c_weight). 1.0 (default) is
-            the symmetric 50/50 average; smaller values down-weight t->c so the
-            useful color->text classification signal is not diluted.
+            Loss = (c2t_weight * c2t + t2c_weight * t2c) / (c2t_weight + t2c_weight).
+            1.0 (default) is the symmetric 50/50 average; smaller values down-weight
+            t->c so the useful color->text classification signal is not diluted.
+        c2t_weight: relative weight of the color->text term (default 1.0). Set to 0.0
+            with t2c_weight > 0 to train solely on name->colour while still logging
+            loss_c2t under no_grad.
         t2c_eps: see BaseCLIPLoss. Prototype k's right colours are the rows
             labelled k; a pick within eps of one of them is accepted for it.
     """
 
     def __init__(self, temperature: float = 0.07, class_weights: torch.Tensor = None,
-                 t2c_weight: float = 1.0, t2c_eps: float = 0):
+                 t2c_weight: float = 1.0, t2c_eps: float = 0, c2t_weight: float = 1.0):
         super().__init__(temperature, t2c_eps)
+        if c2t_weight < 0 or t2c_weight < 0 or (c2t_weight + t2c_weight) <= 0:
+            raise ValueError("c2t_weight and t2c_weight must be >= 0 with a positive sum")
         # Registered as a buffer so it moves with .to(device); may be None.
         self.register_buffer("class_weights", class_weights)
+        self.c2t_weight = c2t_weight
         self.t2c_weight = t2c_weight
 
     def forward(
@@ -291,7 +299,9 @@ class PrototypeCLIPLoss(BaseCLIPLoss):
         logits = self.compute_logits(color_embeds, text_embeds)  # (N, K)
 
         # color->text: each color classified against the K prototypes
-        loss_c2t = F.cross_entropy(logits, labels, weight=self.class_weights)
+        c2t_ctx = torch.no_grad() if self.c2t_weight == 0 else contextlib.nullcontext()
+        with c2t_ctx:
+            loss_c2t = F.cross_entropy(logits, labels, weight=self.class_weights)
 
         # text->color: each present prototype matches all its samples (soft targets)
         present = labels.unique()                            # (P,)
@@ -305,10 +315,16 @@ class PrototypeCLIPLoss(BaseCLIPLoss):
         # near-identical shades look the same to it. The real floor is q(n|k)
         # proportional to p(k | rgb_n), measured at ~5.2 nats vs this bound's 2.3 (see
         # research_plan.md note 5).
-        loss_t2c = self._t2c(loss_c2t, F.cross_entropy(logits_t2c, soft_targets), logits_t2c,
-                             soft_targets, rgb)
+        t2c_ctx = torch.no_grad() if self.t2c_weight == 0 else contextlib.nullcontext()
+        with t2c_ctx:
+            loss_t2c = self._t2c(loss_c2t, F.cross_entropy(logits_t2c, soft_targets), logits_t2c,
+                                 soft_targets, rgb)
 
-        return (loss_c2t + self.t2c_weight * loss_t2c) / (1.0 + self.t2c_weight)
+        if self.t2c_weight == 0:
+            return loss_c2t
+        if self.c2t_weight == 0:
+            return loss_t2c
+        return (self.c2t_weight * loss_c2t + self.t2c_weight * loss_t2c) / (self.c2t_weight + self.t2c_weight)
 
 
 class SupConCLIPLoss(BaseCLIPLoss):

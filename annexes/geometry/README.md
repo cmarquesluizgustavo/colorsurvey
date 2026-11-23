@@ -220,5 +220,5 @@ Full list: `per_class_96c.csv`. Per-name scores for individual runs are stored i
 - **Clean rows only.** Every model is scored on its own split's test rows after the first
   5,000, which chose its epoch (research_plan.md note 10). 5,363 names are left out: after
   removing those rows, some names have one clean row or none.
-- **Coverage.** 1290 runs across rounds 7th through 21st
+- **Coverage.** 1292 runs across rounds 7th through 22nd
   at 14, 96 and 797 names. Gaps that remain show as `—` in the tower table.

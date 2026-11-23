@@ -52,11 +52,14 @@ RUNS = [("14th", f"clip_96c_proto_dim64_ch64_th256_t2c{w}_bs{b}")
     ("8th", "clip_14c_supc_dim64_ch32_th128x256"),
 ] + [("20th", f"clip_96c_proto_dim64_ch64_th256_t2c{w}_sgd") for w in ("0", "01", "1", "10")] + [
     ("21st", f"clip_797c_proto_dim64_ch64_th256_t2c{w}_{o}")
-    for o in ("adamw", "sgd") for w in ("0", "01", "1", "10")]
+    for o in ("adamw", "sgd") for w in ("0", "01", "1", "10")
+] + [("22nd", f"clip_96c_proto_dim64_ch64_th256_c2t0_{o}") for o in ("adamw", "sgd")]
 
 
 def checkpoint(rnd, run):
-    return os.path.join("experiments", rnd, "models", run, "best_color_clip_model.pth")
+    base = os.path.join("experiments", rnd, "models", run)
+    best = os.path.join(base, "best_color_clip_model.pth")
+    return best if os.path.exists(best) else os.path.join(base, "color_clip_model.pth")
 
 
 def tv(p, q):
@@ -220,8 +223,8 @@ def score(rnd, run):
     tc = cfg["training"]
     np.savez_compressed(
         f"{run}.npz", round=rnd, run=run, names=np.array(names), loss=tc["loss_type"],
-        t2c_weight=tc.get("t2c_weight", 1.0), batch_size=cfg["data"]["batch_size"],
-        temperature=temp, **out)
+        c2t_weight=tc.get("c2t_weight", 1.0), t2c_weight=tc.get("t2c_weight", 1.0),
+        batch_size=cfg["data"]["batch_size"], temperature=temp, **out)
     print(f"{run}: AUC {out['auc'].mean():.3f}", flush=True)
 
 
@@ -231,6 +234,8 @@ def label(d):
         s += f", weight {float(d['t2c_weight']):g}, batch {int(d['batch_size'])}"
     elif str(d["round"]) in ("20th", "21st"):
         s += f", weight {float(d['t2c_weight']):g}, {str(d['run']).rsplit('_', 1)[1].upper()}"
+    elif str(d["round"]) == "22nd":
+        s += f", c2t 0, {str(d['run']).rsplit('_', 1)[1].upper()}"
     return s
 
 
@@ -260,16 +265,28 @@ def report():
             continue
         main_row = tbl.loc[run]
         has_crowd = pd.notna(main_row.get("Colour_To_Name_Diff"))
+        has_npz_full = f"name_model_{PLOT_TOL}" in d
         if len(d["names"]) <= 96 and not has_crowd:
             continue
 
-        pn = pd.read_csv(pn_path).set_index("Name")
         names = [str(n) for n in d["names"]]
-        answers = np.array([int(pn.loc[n, "Count"]) for n in names])
-        tol8_name_model = np.array([float(pn.loc[n, "Name_To_Colour_Diff"]) for n in names])
-        tol8_name_halves = np.array([float(pn.loc[n, "Name_To_Colour_Halves"]) for n in names])
-        tol8_centre = np.array([float(pn.loc[n, "Centre_Distance"]) for n in names])
-        tol8_width = np.array([float(pn.loc[n, "Width_Ratio"]) for n in names])
+        if has_crowd:
+            pn = pd.read_csv(pn_path).set_index("Name")
+            answers = np.array([int(pn.loc[n, "Count"]) for n in names])
+            tol8_name_model = np.array([float(pn.loc[n, "Name_To_Colour_Diff"]) for n in names])
+            tol8_name_halves = np.array([float(pn.loc[n, "Name_To_Colour_Halves"]) for n in names])
+            tol8_centre = np.array([float(pn.loc[n, "Centre_Distance"]) for n in names])
+            tol8_width = np.array([float(pn.loc[n, "Width_Ratio"]) for n in names])
+        elif has_npz_full:
+            answers = d["answers"]
+            tol8_name_model = d[f"name_model_{PLOT_TOL}"]
+            tol8_name_halves = d[f"name_halves_{PLOT_TOL}"]
+            tol8_centre = d["centre"]
+            tol8_width = d[f"width_model_{PLOT_TOL}"] / d[f"width_people_{PLOT_TOL}"]
+        else:
+            pn = pd.read_csv(pn_path).set_index("Name")
+            answers = np.array([int(pn.loc[n, "Count"]) for n in names])
+            tol8_name_model = tol8_name_halves = tol8_centre = tol8_width = np.full(len(names), np.nan)
         common = answers >= COMMON
 
         plot_runs.append({
@@ -308,11 +325,11 @@ def report():
                 "auc": round(float(d["auc"][k]), 4),
             })
 
-        for tol in (TOLS if has_crowd else (None,)):
+        for tol in (TOLS if (has_crowd or has_npz_full) else (None,)):
             if tol is None:
                 nm = nh = None
                 c2n_diff = c2n_halves = top_match = n2c_diff = n2c_halves = width_ratio = centre_dist = None
-            elif tol == PLOT_TOL:
+            elif tol == PLOT_TOL and has_crowd:
                 nm, nh = tol8_name_model, tol8_name_halves
                 c2n_diff = float(main_row["Colour_To_Name_Diff"])
                 c2n_halves = float(main_row["Colour_To_Name_Halves"])

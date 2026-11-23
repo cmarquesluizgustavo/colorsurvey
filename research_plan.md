@@ -42,6 +42,10 @@ checkpoints (full test set, or `annexes/geometry/`), not from the `R_at_1` colum
 | 16th | Push geometry further; measure seed noise | prototype, 96 / 797 names, towers [32,128] / [32,128,128] / [64,256] × start temperature 0.07 / 0.2 / 0.5 × 3 seeds (54) | Written, not run. |
 | 17th | Learning rate above 3e-3 | lr 1e-2 / 3e-2 / 1e-1 / 5e-1 × 4 losses, as the 12th (16) | Written, not run. |
 | 18th | Does a pixel tolerance in t→c help? (`t2c_eps`: a t→c pick within ε per channel of the right pixel is accepted) | dim64 ch[64] th[256] (best undisputed settings, see the round's docstring); 14 / 96 / 797 names × 4 losses × ε 0 / 1 / 5 / 10 / 16 (60) | Written, not run. In-batch neighbours per row at batch 2048: 0.003 / 0.15 / 1.1 / 4.0 — ε 1 is a control. How to read it: the round's `generate_configs.py`. |
+| 19th | Find a working learning rate for plain SGD | 96 names, dim64 ch[64] th[256], SGD momentum 0.9 across lr 0.01 to 1.0 (5) | lr 0.03 matches AdamW (`R@1 = 0.4855`); 1.0 collapsed at epoch 1. |
+| 20th | Does AdamW hide the t→c weight? (96 names) | 96 names, dim64 ch[64] th[256], SGD lr 0.03 across t→c weight 0, 0.1, 1, 10 (4) | No: plain SGD matches Round 14 AdamW — weight 0 drifts over 20 RGB units off people-driven centres, while 0.1, 1, and 10 align within about 4 units. |
+| 21st | Same test at 797 names | 797 names, AdamW and plain SGD across t→c weight 0, 0.1, 1, 10 (8) | Plain SGD matches AdamW across common and rare names: weight 0 drifts 22–23 units, while 0.1, 1, and 10 converge (`0.1` best on silhouette and log-loss). |
+| 22nd | Name-to-colour alone (`c2t_weight = 0`) | 96 names, AdamW and plain SGD at c→t weight 0, t→c weight 1 (2) | Colour regions (3.4–3.5 RGB units) and silhouette stay intact, while `R@1` collapses to 0.042–0.083 (0% on green, blue, and red). |
 
 ## Important notes
 
@@ -112,15 +116,15 @@ checkpoints (full test set, or `annexes/geometry/`), not from the `R_at_1` colum
    gap is indistinguishable from zero and certainly not 3 nats. The column is renamed
    `loss_t2c_above_uniform` so it stops reading as headroom.
 
-   **14th round** (t→c weight 0 / 0.1 / 1 / 10 × batch 96 / 512 / 2048) *(added 2026-10-18,
-   provisional)*. Accuracy does not depend on the weight: all twelve runs are within 0.002
-   R@1, including with t→c switched off, and the c→t loss does not move either — for
-   accuracy, t→c can be removed. Geometry does depend on it, a little: 0.1 gives the best
-   silhouette at every batch size, then off, then the default 1, then 10 (about 0.005
-   between 0.1 and 1). **Still open:** why a term whose gradient is 1.67× larger than c→t's
-   (`‖∇t2c‖ = 1.34` vs `‖∇c2t‖ = 0.80`, cos +0.33) changes nothing in accuracy; AdamW's
-   per-parameter rescaling remains the candidate. The 16th round runs t→c at 0.1 with
-   three seeds.
+   **14th round** (t→c weight 0, 0.1, 1, 10 × batch 96, 512, 2048) *(settled 2026-11-22 in
+   rounds 19th–22nd)*. Accuracy does not move with the weight (`R@1` stays near `0.485`),
+   yet turning name-to-colour off lets each name's colour region drift 18–25 RGB units off
+   people-driven centres (`annexes/people_vs_model/report.md`). Plain SGD at 96 and 797
+   names (rounds 19th–21st) ruled out AdamW step rescaling (`0.1`, `1`, and `10` converge
+   to the same model under both optimisers, with `0.1` best on silhouette and log-loss), and
+   Round 22nd (`c2t_weight = 0`) confirmed the mirror image (regions intact, `R@1` collapses
+   to 4–8%). Both directions need each other, and AdamW stays our default because plain SGD
+   ends with worse cluster silhouette.
 
    **Relation between training colour-to-name loss and held-out test log-loss** *(added 2026-11-20)*.
    At final evaluation we score every model with `Log_Loss` on the held-out test set: the
@@ -285,13 +289,15 @@ checkpoints (full test set, or `annexes/geometry/`), not from the `R_at_1` colum
 
 11. **Comparing the model's probability splits against people in both directions.**
     Because accuracy from colour to name is already at the level of a memorising lookup table,
-    we compared 20 models directly against held-out human answers within small RGB tolerance
-    windows (4, 8, and 16 units per channel), using a random split of people into two halves
-    as a noise reference. Changing the name-to-colour loss weight (0.1, 1, or 10) moves
-    neither colour-to-name probabilities nor accuracy, but turning it off (weight 0) shifts
-    each name's colour region 18 to 25 RGB units away from people instead of 3 to 5 units.
-    The model's full probabilities match people's splits far better than its single top guess
-    (0.12 against 0.47 difference at tolerance 8). The full explanation and math are in
+    we compared 34 models across rounds 8, 11, 14, 15, 16, 20, 21, and 22 directly against
+    held-out human answers within small RGB tolerance windows (4, 8, and 16 units per channel),
+    using a random split of people into two halves as a noise reference. Changing the
+    name-to-colour loss weight (0.1, 1, or 10) moves neither probabilities nor accuracy under
+    AdamW or plain SGD at 96 and 797 names, while turning it off shifts each name's colour
+    region 18 to 25 RGB units away from people. Conversely, turning colour-to-name off
+    preserves colour regions while collapsing accuracy to 4–8%. The model's full
+    probabilities match people's splits far better than its single top guess (0.12 against
+    0.47 difference at 96 names, tolerance 8). The full explanation and math are in
     `annexes/people_vs_model/report.md`.
 
 ## Task cards
